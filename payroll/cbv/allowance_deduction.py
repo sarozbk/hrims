@@ -111,6 +111,8 @@ class AllowanceTabList(AllowanceListView):
     list view for allowance tab
     """
 
+    show_saved_filters = False
+
     template_name = "cbv/allowance_deduction/allowance_deduction.html"
 
     def __init__(self, **kwargs: Any) -> None:
@@ -118,6 +120,8 @@ class AllowanceTabList(AllowanceListView):
         self.view_id = "allowance_tab_id"
         pk = self.request.resolver_match.kwargs.get("pk")
         self.search_url = reverse("allowance-tab-list", kwargs={"pk": pk})
+        if not self.request.user.has_perm("payroll.add_allowance"):
+            self.row_attrs = ""
 
     columns = [
         col
@@ -231,6 +235,8 @@ class DeductionTab(DeductionListView):
     list view for deduction tab
     """
 
+    show_saved_filters = False
+
     @method_decorator(login_required, name="dispatch")
     def dispatch(self, request, *args, **kwargs):
         if not Employee.objects.filter(id=kwargs.get("pk")).exists():
@@ -244,6 +250,8 @@ class DeductionTab(DeductionListView):
         pk = self.request.resolver_match.kwargs.get("pk")
         self.search_url = reverse("deduction-tab-list", kwargs={"pk": pk})
         self.row_status_indications = None
+        if not self.request.user.has_perm("payroll.add_deduction"):
+            self.row_attrs = "{diff_cell}"
 
     columns = [
         col

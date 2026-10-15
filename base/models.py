@@ -123,10 +123,12 @@ class Company(HorillaModel):
         return str(self.company)
 
     def company_icon_with_name(self):
+        from django.templatetags.static import static
 
+        icon_url = self.icon.url if self.icon else static("images/ui/auth-logo.png")
         return format_html(
             '<img src="{}" style="width: 30px; border-radius: 100%; display:inline;" class="oh-profile__image" alt="" /> {}',
-            self.icon.url,
+            icon_url,
             self.company,
         )
 
@@ -714,7 +716,7 @@ class RotatingWorkTypeAssign(HorillaModel):
         """
 
         if self.is_active:
-            return "Is Active"
+            return "Active"
         else:
             return "Archived"
 
@@ -1288,7 +1290,7 @@ class RotatingShiftAssign(HorillaModel):
         """
 
         if self.is_active:
-            return "Is Active"
+            return "Active"
         else:
             return "Archived"
 
@@ -2643,6 +2645,10 @@ class EmailLog(models.Model):
     def __str__(self) -> str:
         return f"{self.subject} {self.to}"
 
+    def subject_display(self):
+        """The subject HTML-escaped, for list cells that render values as safe."""
+        return format_html("{}", self.subject)
+
     def status_display(self):
         status = dict(self.statuses).get(self.status)
         if self.status == "sent":
@@ -2825,7 +2831,7 @@ class Holidays(HorillaModel):
     start_date = models.DateField(verbose_name=_("Start Date"))
     end_date = models.DateField(null=True, blank=True, verbose_name=_("End Date"))
     recurring = models.BooleanField(default=False, verbose_name=_("Recurring"))
-    is_specific = models.BooleanField(default=False, verbose_name=_("Is Specific"))
+    is_specific = models.BooleanField(default=False, verbose_name=_("Specific"))
     assigning_type = models.CharField(
         choices=ASSIGNING_TYPE,
         max_length=100,
@@ -2849,6 +2855,7 @@ class Holidays(HorillaModel):
     company_id = models.ForeignKey(
         Company,
         null=True,
+        blank=True,
         on_delete=models.PROTECT,
         verbose_name=_("Company"),
     )
@@ -2857,9 +2864,34 @@ class Holidays(HorillaModel):
     class Meta:
         verbose_name = _("Holiday")
         verbose_name_plural = _("Holidays")
+        constraints = [
+            # NULLs are distinct in a unique index, so company-scoped and
+            # global (company_id=None) holidays need separate constraints.
+            models.UniqueConstraint(
+                fields=["start_date", "end_date", "company_id"],
+                name="unique_holiday_dates_per_company",
+                violation_error_message=_(
+                    "A holiday already exists for this date range in this company."
+                ),
+            ),
+            models.UniqueConstraint(
+                fields=["start_date", "end_date"],
+                condition=models.Q(company_id__isnull=True),
+                name="unique_global_holiday_dates",
+                violation_error_message=_(
+                    "A holiday already exists for this date range for all companies."
+                ),
+            ),
+        ]
 
     def __str__(self):
         return self.name
+
+    def get_company_name(self):
+        return self.company_id.company if self.company_id else _("All Companies")
+
+    def get_available_for_all_status(self):
+        return _("No") if self.is_specific else _("Yes")
 
     def detail_view(self):
         """

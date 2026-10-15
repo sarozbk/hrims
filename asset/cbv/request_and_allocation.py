@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import Any
 
 from django.contrib import messages
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, QueryDict
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils import timezone
@@ -191,6 +191,7 @@ class AssetAllocationList(AllocationList):
         (_("Asset"), "asset_id"),
         (_("Assigned Date"), "assigned_date"),
         (_("Return Date"), "return_status_col"),
+        (_("Return Status"), "return_status"),
     ]
 
     sortby_mapping = [
@@ -198,6 +199,7 @@ class AssetAllocationList(AllocationList):
         (_("Asset"), "asset_id__asset_name"),
         (_("Assigned Date"), "assigned_date"),
         (_("Return Date"), "return_status_col"),
+        (_("Return Status"), "return_status"),
     ]
 
     row_attrs = """
@@ -334,6 +336,60 @@ class AssetServiceRequestList(HorillaListView):
         ("Status", "status_col"),
     ]
 
+    row_status_indications = [
+        (
+            "blue--dot",
+            _("Requested"),
+            """
+            onclick="
+                $('#applyFilter').closest('form').find('[name=status]').val('Requested');
+                $('#applyFilter').click();
+            "
+            """,
+        ),
+        (
+            "orange--dot",
+            _("In Progress"),
+            """
+            onclick="
+                $('#applyFilter').closest('form').find('[name=status]').val('In Progress');
+                $('#applyFilter').click();
+            "
+            """,
+        ),
+        (
+            "yellow--dot",
+            _("Completed"),
+            """
+            onclick="
+                $('#applyFilter').closest('form').find('[name=status]').val('Completed');
+                $('#applyFilter').click();
+            "
+            """,
+        ),
+        (
+            "red--dot",
+            _("Rejected"),
+            """
+            onclick="
+                $('#applyFilter').closest('form').find('[name=status]').val('Rejected');
+                $('#applyFilter').click();
+            "
+            """,
+        ),
+        (
+            "gray--dot",
+            _("Returned"),
+            """
+            onclick="
+                $('#applyFilter').closest('form').find('[name=status]').val('Returned');
+                $('#applyFilter').click();
+            "
+            """,
+        ),
+    ]
+    row_status_class = "{row_status_class}"
+
     row_attrs = """
         hx-get='{detail_view_url}'
         hx-target="#genericModalBody"
@@ -382,11 +438,46 @@ class AssetRequestDelete(DeleteView):
         return HorillaFormView.HttpResponse()
 
 
+def _query_for_tab(params, filter_class, all_filters):
+    """
+    The query string for one tab: the page's query minus the filters that only
+    other tabs' lists have, and minus the "+ Add filter" rows (custom_field /
+    custom_lookup / custom_value) that name a field this tab's filter doesn't
+    offer. Parameters nobody's filter owns (filter_applied, nested_fields,
+    search ...) go through.
+    """
+    own = set(filter_class.base_filters)
+    foreign = set()
+    for other in all_filters:
+        foreign |= set(other.base_filters)
+    foreign -= own
+    custom = ("custom_field", "custom_lookup", "custom_value")
+
+    query = QueryDict(mutable=True)
+    for key, values in params.lists():
+        if key in foreign or key in custom:
+            continue
+        query.setlist(key, values)
+
+    allowed = {field["key"] for field in filter_class().custom_filter_fields}
+    rows = zip(*(params.getlist(key) for key in custom))
+    for field, lookup, value in rows:
+        if field in allowed:
+            query.appendlist("custom_field", field)
+            query.appendlist("custom_lookup", lookup)
+            query.appendlist("custom_value", value)
+    return query.urlencode()
+
+
 @method_decorator(login_required, name="dispatch")
 class RequestAndAllocationTab(HorillaTabView):
     """
     Tab View
     """
+
+    # Asset, Asset Request, Asset Allocation and Service Request are lists of
+    # different records, so a filter saved on one must not apply on another.
+    share_saved_filters_across_tabs = False
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -422,32 +513,62 @@ class RequestAndAllocationTab(HorillaTabView):
             self.request.GET, queryset=AssetServiceRequest.objects.all()
         ).qs.count()
 
+        # Each tab's shell hands its query string on to its own nav and list. Without
+        # it they only had HX-Current-Url to go on, which is stale when the page was
+        # reached by a boosted (htmx) navigation -- so a deep link such as
+        # ?assigned_to_employee_id=<id> filtered the first time and not after.
+        # Each tab only gets the filters its own list understands: a deep link
+        # made for one tab (?asset_request_status=Requested&custom_field=...)
+        # must not show up as filter tags on the others.
+        extra_params = self.request.GET.copy()
+        extra_params.pop("open_tab", None)
+        extra_params.pop("view", None)
+        all_filters = (
+            AssetAllocationFilter,
+            CustomAssetFilter,
+            AssetRequestFilter,
+            AssetServiceRequestFilter,
+        )
+
+        def tab_url(name, filter_class):
+            query = _query_for_tab(extra_params, filter_class, all_filters)
+            url = reverse(name)
+            return f"{url}?{query}" if query else url
+
         self.tabs = [
             {
                 "title": _("Asset"),
-                "url": f"{reverse('req-alloc-asset-tab-shell')}",
+                "url": tab_url("req-alloc-asset-tab-shell", AssetAllocationFilter),
                 "badge": asset_count,
+                "query_scoped": True,
             },
             {
                 "title": _("Asset Request"),
-                "url": f"{reverse('req-alloc-asset-request-tab-shell')}",
+                "url": tab_url("req-alloc-asset-request-tab-shell", AssetRequestFilter),
                 "badge": request_count,
+                "query_scoped": True,
             },
         ]
         if self.request.user.has_perm("asset.view_assetassignment"):
             self.tabs.append(
                 {
                     "title": _("Asset Allocation"),
-                    "url": f"{reverse('req-alloc-asset-allocation-tab-shell')}",
+                    "url": tab_url(
+                        "req-alloc-asset-allocation-tab-shell", AssetAllocationFilter
+                    ),
                     "badge": allocation_count,
+                    "query_scoped": True,
                 },
             )
         if self.request.user.has_perm("asset.change_assetassignment"):
             self.tabs.append(
                 {
                     "title": _("Service Request"),
-                    "url": f"{reverse('req-alloc-service-request-tab-shell')}",
+                    "url": tab_url(
+                        "req-alloc-service-request-tab-shell", AssetServiceRequestFilter
+                    ),
                     "badge": service_request_count,
+                    "query_scoped": True,
                 },
             )
 

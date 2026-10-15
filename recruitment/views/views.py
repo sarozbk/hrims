@@ -582,10 +582,12 @@ def update_candidate_stage_and_sequence(request):
 
     pipeline_cache = CACHE.get(request.session.session_key + "pipeline")
     if not pipeline_cache:
+        messages.error(request, _("Pipeline cache expired."))
         return JsonResponse({"message": _("Pipeline cache expired.")})
 
     stage = pipeline_cache["stages"].filter(id=stage_id).first()
     if not stage:
+        messages.error(request, _("Stage not found."))
         return JsonResponse({"message": _("Stage not found.")})
 
     context = {}
@@ -594,6 +596,7 @@ def update_candidate_stage_and_sequence(request):
         pipeline_cache["candidates"].filter(id=cand_id).update(
             sequence=index, stage_id=stage
         )
+    messages.success(request, _("Sequence updated"))
 
     if stage.stage_type == "hired" and stage.recruitment_id.is_vacancy_filled():
         context["message"] = _("Vacancy is filled")
@@ -875,6 +878,26 @@ def recruitment_close_pipeline(request, rec_id):
         messages.success(request, _("Recruitment closed successfully"))
     except (Recruitment.DoesNotExist, OverflowError):
         messages.error(request, _("Recruitment Does not exists.."))
+    # Two different callers hit this same view via htmx:
+    # - recruitment_pipeline_actions() (Pipeline page): hx-target points
+    #   straight at #pipelineContainer, so answering with cbv-pipeline-tab's
+    #   own freshly rendered content swaps it in directly.
+    # - the Recruitment list page's own Actions column: no special-casing,
+    #   same as before this view knew about the Pipeline page at all --
+    #   HorillaRedirect(request) answers an htmx request with an
+    #   HX-Redirect header, which htmx treats as a full browser redirect
+    #   regardless of hx-swap="none". That's what was actually making this
+    #   page's Close/Reopen "just work": a full reload back to the same
+    #   page, not the hx-on::after-request/$('#applyFilter') indirection
+    #   (which Archive/Delete also carry, unused for the same reason --
+    #   hx-swap="none" never inserts a response body anywhere, so a script
+    #   tag in it never runs; their own real mechanism is this same
+    #   redirect). Only the Pipeline caller gets the different, no-reload
+    #   treatment it specifically asked for.
+    if request.headers.get("HX-Target") == "pipelineContainer":
+        from recruitment.cbv.pipeline import RecruitmentTabView
+
+        return RecruitmentTabView.as_view()(request)
     return HorillaRedirect(request)
 
 
@@ -886,6 +909,11 @@ def recruitment_reopen_pipeline(request, rec_id):
     """
     recruitment_obj = Recruitment.find(rec_id)
     if not recruitment_obj:
+        if request.headers.get("HX-Target") == "pipelineContainer":
+            messages.error(request, _("No Recruitment found matching the query."))
+            from recruitment.cbv.pipeline import RecruitmentTabView
+
+            return RecruitmentTabView.as_view()(request)
         return HorillaRedirect(
             request, message=_("No Recruitment found matching the query.")
         )
@@ -893,6 +921,11 @@ def recruitment_reopen_pipeline(request, rec_id):
     recruitment_obj.closed = False
     recruitment_obj.save()
     messages.success(request, _("Recruitment reopend successfully"))
+    # See recruitment_close_pipeline's comment above.
+    if request.headers.get("HX-Target") == "pipelineContainer":
+        from recruitment.cbv.pipeline import RecruitmentTabView
+
+        return RecruitmentTabView.as_view()(request)
     return HorillaRedirect(request)
 
 
@@ -1880,7 +1913,7 @@ def scheduled_interview_tab(request, pk, **kwargs):
     interviews = InterviewSchedule.objects.filter(employee_id=employee).order_by(
         "-interview_date"
     )
-    interviews = paginator_qry(interviews, request.GET.get("page"))
+    interviews = Paginator(interviews, 10).get_page(request.GET.get("page"))
     return render(
         request,
         "tabs/scheduled_interview.html",
@@ -2606,12 +2639,14 @@ def stage_sequence_update(request):
     """
     sequence_data = json.loads(request.POST.get("sequence", "{}"))
     if not sequence_data:
+        messages.error(request, _("Missing Sequence"))
         return JsonResponse({"type": "error", "message": _("Missing Sequence")})
 
     for stage_id, seq in sequence_data.items():
         stage = Stage.objects.get(id=stage_id)
         stage.sequence = seq
         stage.save()
+    messages.success(request, _("Stage sequence updated"))
     return JsonResponse({"type": "success", "message": "Stage sequence updated"})
 
 

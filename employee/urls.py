@@ -5,6 +5,7 @@ This module is used to map url path with view methods.
 """
 
 from django.urls import path
+from django.utils.translation import gettext_lazy as _
 
 from base.templatetags.horillafilters import app_installed
 from base.views import object_delete, object_duplicate
@@ -146,7 +147,7 @@ urlpatterns = [
         "employee-view-update/<int:obj_id>/",
         views.employee_view_update,
         name="employee-view-update",
-        kwargs={"model": Employee},
+        kwargs={"model": Employee, "crumb_label": _("Edit")},
     ),
     path(
         "employee-create-personal-info/",
@@ -292,44 +293,39 @@ urlpatterns = [
         name="employee-dashboard-kpi",
     ),
     path(
+        "dashboard/api/work-type/",
+        emp_dashboard.employee_by_work_type,
+        name="employee-dashboard-work-type",
+    ),
+    path(
+        "dashboard/api/shift/",
+        emp_dashboard.employee_by_shift,
+        name="employee-dashboard-shift",
+    ),
+    path(
         "dashboard/api/departments/",
         emp_dashboard.employee_by_department,
         name="employee-dashboard-dept",
     ),
     path(
-        "dashboard/api/gender/",
-        emp_dashboard.employee_by_gender,
-        name="employee-dashboard-gender",
+        "dashboard/api/department-positions/",
+        emp_dashboard.employee_department_positions,
+        name="employee-dashboard-dept-positions",
     ),
     path(
-        "dashboard/api/type/",
-        emp_dashboard.employee_by_type,
-        name="employee-dashboard-type",
+        "dashboard/api/reporting-managers/",
+        emp_dashboard.employee_by_reporting_manager,
+        name="employee-dashboard-reporting-managers",
     ),
     path(
-        "dashboard/api/position/",
-        emp_dashboard.employee_by_job_position,
-        name="employee-dashboard-position",
+        "dashboard/api/new-joiners/",
+        emp_dashboard.employee_new_joiners,
+        name="employee-dashboard-new-joiners",
     ),
     path(
-        "dashboard/api/joining-trend/",
-        emp_dashboard.employee_joining_trend,
-        name="employee-dashboard-joining-trend",
-    ),
-    path(
-        "dashboard/api/headcount/",
-        emp_dashboard.employee_headcount_trend,
-        name="employee-dashboard-headcount",
-    ),
-    path(
-        "dashboard/api/recent/",
-        emp_dashboard.employee_recent_list,
-        name="employee-dashboard-recent",
-    ),
-    path(
-        "dashboard/api/birthdays/",
-        emp_dashboard.employee_upcoming_birthdays,
-        name="employee-dashboard-birthdays",
+        "dashboard/api/expired-documents/",
+        emp_dashboard.employee_expired_documents,
+        name="employee-dashboard-expired-documents",
     ),
     path(
         "total-employees-count/",
@@ -394,6 +390,16 @@ urlpatterns = [
         kwargs={"model": Employee},
     ),
     path("document-tab/<int:pk>/", views.document_tab, name="document-tab"),
+    path(
+        "employee-document-tab-shell/<int:pk>/",
+        document_request.DocumentIndividualTabShell.as_view(),
+        name="employee-document-tab-shell",
+    ),
+    path(
+        "employee-document-tab-nav/<int:pk>/",
+        document_request.DocumentIndividualNav.as_view(),
+        name="employee-document-tab-nav",
+    ),
     path(
         "employee-document-tab-list/<int:pk>/",
         document_request.DocumentIndividualTabList.as_view(),

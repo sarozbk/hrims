@@ -71,7 +71,7 @@ from horilla.decorators import (
     permission_required,
 )
 from horilla.group_by import group_by_queryset
-from horilla.http.response import HorillaRedirect
+from horilla.http.response import HorillaRedirect, with_bulk_result
 from horilla.methods import handle_no_permission
 from notifications.signals import notify
 
@@ -1648,22 +1648,17 @@ def tickets_bulk_archive(request):
     is_active = False
     if request.GET.get("is_active") == "True":
         is_active = True
+    done = failed = 0
     for ticket_id in ids:
-        ticket = Ticket.objects.get(id=ticket_id)
+        ticket = Ticket.objects.filter(id=ticket_id).first()
+        if ticket is None:
+            failed += 1
+            continue
         ticket.is_active = is_active
         ticket.save()
-    messages.success(request, _("The Ticket updated successfully."))
-    previous_url = request.META.get("HTTP_REFERER", "/")
-
-    # Prevent XSS / open redirect
-    if not url_has_allowed_host_and_scheme(
-        previous_url,
-        allowed_hosts={request.get_host()},
-        require_https=request.is_secure(),
-    ):
-        previous_url = "/"
-
-    return redirect(previous_url)
+        done += 1
+    # The caller reloads the page itself; the counts feed the result dialog.
+    return with_bulk_result(JsonResponse({"message": "Success"}), done, failed)
 
 
 @login_required
@@ -1795,13 +1790,7 @@ def update_priority(request, ticket_id):
             request, message=_("No Ticket found matching the query.")
         )
 
-    if (
-        request.user.has_perm("helpdesk.view_ticket")
-        or ticket.employee_id.get_reporting_manager() == request.user.employee_get
-        or is_department_manager(request, ticket)
-        or request.user.employee_get == ticket.employee_id
-        or request.user.employee_get in ticket.assigned_to.all()
-    ):
+    if ticket.can_manage_priority():
         rating = request.POST.get("rating")
 
         if rating == "1":
@@ -1814,6 +1803,30 @@ def update_priority(request, ticket_id):
         messages.success(request, _("Priority updated successfully."))
         return HorillaRedirect(request)
     return handle_no_permission(request)
+
+
+@login_required
+@ticket_owner_can_enter(perm="helpdesk.change_ticket", model=Ticket)
+def update_deadline(request, ticket_id):
+    """
+    This function is used to update the deadline from the detailed view
+    """
+    ticket = Ticket.find(ticket_id)
+    if not ticket:
+        return HorillaRedirect(
+            request, message=_("No Ticket found matching the query.")
+        )
+    if not ticket.can_manage_priority():
+        return handle_no_permission(request)
+    value = request.POST.get("deadline", "").strip()
+    try:
+        ticket.deadline = datetime.strptime(value, "%Y-%m-%d").date() if value else None
+    except ValueError:
+        messages.error(request, _("Invalid date."))
+        return HorillaRedirect(request)
+    ticket.save()
+    messages.success(request, _("Deadline updated successfully."))
+    return HorillaRedirect(request)
 
 
 @login_required

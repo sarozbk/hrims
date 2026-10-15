@@ -123,8 +123,8 @@ class ObjectivesList(HorillaListView):
         ("title", _("Title")),
         ("duration_unit", _("Duration Unit")),
         ("duration", _("Duration")),
-        ("is_template", _("Is Template")),
-        ("archive", _("Is Archived")),
+        ("is_template", _("Template")),
+        ("archive", _("Archived")),
         ("company_id", _("Company")),
     ]
 
@@ -329,8 +329,8 @@ class _ObjectivesTabNavBase(HorillaNavView):
         ("title", _("Title")),
         ("duration_unit", _("Duration Unit")),
         ("duration", _("Duration")),
-        ("is_template", _("Is Template")),
-        ("archive", _("Is Archived")),
+        ("is_template", _("Template")),
+        ("archive", _("Archived")),
         ("company_id", _("Company")),
     ]
 
@@ -875,13 +875,39 @@ class EmployeeObjectiveKeyResultDetailListView(HorillaListView):
             pk=self.request.GET.get("employee_objective_id")
         ).first()
 
+        # Row actions, in this order: History, Edit, Delete.
         self.actions = []
+        if (
+            emp_objective
+            and self.request.user.employee_get
+            in emp_objective.objective_id.managers.all()
+            or self.request.user.has_perm("pms.view_employeekeyresult")
+        ):
+            self.actions.append(
+                {
+                    "action": _("History"),
+                    "icon": "time-outline",
+                    "attrs": """
+                hx-get='{get_history_url}'
+                hx-target="#genericOffCanvas"
+                data-target='#genericSidebar'
+                class="oh-btn oh-btn--light-bkg oh-btn--sq-sm oh-activity-sidebar__open"
+                style="cursor: pointer;"
+                """,
+                }
+            )
         if (
             self.request.user.has_perm("pms.change_objective")
             or self.request.user.has_perm("pms.change_employeeobjective")
             or self.request.user.has_perm("pms.change_employeekeyresult")
-            or self.request.user.employee_get
-            in emp_objective.objective_id.managers.all()
+            # No employee_objective_id in the request (the profile's standalone
+            # Key Results tab lists key results of many objectives): there is no
+            # single objective whose managers to check.
+            or (
+                emp_objective is not None
+                and self.request.user.employee_get
+                in emp_objective.objective_id.managers.all()
+            )
         ):
             self.actions.append(
                 {
@@ -911,26 +937,6 @@ class EmployeeObjectiveKeyResultDetailListView(HorillaListView):
                         hx-on-htmx-after-request= "window.location.reload();"
                         style="cursor: pointer;"
                     """,
-                }
-            )
-
-        if (
-            emp_objective
-            and self.request.user.employee_get
-            in emp_objective.objective_id.managers.all()
-            or self.request.user.has_perm("pms.view_employeekeyresult")
-        ):
-            self.actions.append(
-                {
-                    "action": _("History"),
-                    "icon": "time-outline",
-                    "attrs": """
-                hx-get='{get_history_url}'
-                hx-target="#genericOffCanvas"
-                data-target='#genericSidebar'
-                class="oh-btn oh-btn--light-bkg oh-btn--sq-sm oh-activity-sidebar__open"
-                style="cursor: pointer;"
-                """,
                 }
             )
 
@@ -976,6 +982,11 @@ class EKRTab(EmployeeObjectiveKeyResultDetailListView):
     EKR tab
     """
 
+    # The parent's compact "no key results for this objective" line suits a row
+    # of an objective accordion, not a whole tab: use the usual empty-page look.
+    custom_empty_template = "cbv/objectives/tab_empty.html"
+
+    show_saved_filters = False
     columns = [
         (_("Title"), "title_col"),
         (_("Objective"), "employee_objective_id__objective_id__title"),

@@ -7,19 +7,23 @@ This module is used to register forms for base module
 import calendar
 import ipaddress
 import os
+import re
 import uuid
 from datetime import date, datetime, timedelta
+from email.mime.image import MIMEImage
 from typing import Any
 
 import bleach
 from django import forms
 from django.apps import apps
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import SetPasswordForm, _unicode_ci_compare
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth.tokens import default_token_generator
 from django.contrib.sites.shortcuts import get_current_site
+from django.contrib.staticfiles import finders
 from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives
 from django.core.validators import validate_ipv46_address
@@ -27,13 +31,13 @@ from django.db.models import Q
 from django.forms import DateInput, HiddenInput, TextInput
 from django.template import loader
 from django.template.loader import render_to_string
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
 from django.utils.encoding import force_bytes
 from django.utils.html import strip_tags
 from django.utils.http import urlsafe_base64_encode
 from django.utils.translation import gettext_lazy as _
 
-from base.methods import reload_queryset
+from base.methods import get_session_company, reload_queryset
 from base.models import (
     Announcement,
     AnnouncementComment,
@@ -1287,7 +1291,7 @@ class RotatingWorkTypeAssignForm(ModelForm):
             "is_active": HiddenInput(),
         }
         labels = {
-            "is_active": _("Is Active"),
+            "is_active": _("Active"),
             "rotate_every_weekend": _("Rotate every weekend"),
             "rotate_every": _("Rotate every"),
         }
@@ -1334,7 +1338,7 @@ class RotatingWorkTypeAssignForm(ModelForm):
         ).first()
 
         self.errors.pop("employee_id", None)
-        if self.data.getlist("employee_id"):
+        if not self.data.getlist("employee_id"):
             raise ValidationError({"employee_id": _("This field is required")})
         super().clean()
         cleaned_data = super().clean()
@@ -1466,7 +1470,7 @@ class RotatingWorkTypeAssignUpdateForm(forms.ModelForm):
             "rotate_every_weekend": _("Rotate every weekend"),
             "rotate_every": _("Rotate every"),
             "based_on": _("Based on"),
-            "is_active": _("Is Active"),
+            "is_active": _("Active"),
         }
 
     def __init__(self, *args, **kwargs):
@@ -1732,9 +1736,15 @@ class EmployeeShiftScheduleForm(ModelForm):
     def clean(self):
         cleaned_data = super().clean()
         if apps.is_installed("attendance"):
-            auto_punch_out_enabled = self.cleaned_data["is_auto_punch_out_enabled"]
-            auto_punch_out_time = self.cleaned_data["auto_punch_out_time"]
-            end_time = self.cleaned_data["end_time"]
+            # .get(), not [...] -- a required field left blank (e.g. end_time)
+            # is already invalid and removed from cleaned_data by Django's own
+            # per-field validation at this point, so a direct lookup raises
+            # KeyError here instead of letting that field's own "required"
+            # error reach the form -- silently dropping every error alongside
+            # it instead of displaying them.
+            auto_punch_out_enabled = self.cleaned_data.get("is_auto_punch_out_enabled")
+            auto_punch_out_time = self.cleaned_data.get("auto_punch_out_time")
+            end_time = self.cleaned_data.get("end_time")
             if auto_punch_out_enabled:
                 if not auto_punch_out_time:
                     raise ValidationError(
@@ -1874,8 +1884,24 @@ class RotatingShiftForm(ModelForm):
             "base/rotating_shift/htmx/rotating_shift_as_p.html", context
         )
 
+    def _validate_consecutive_shifts(self):
+        """Back-to-back shifts in the rotation must differ (shift N != N+1)."""
+        shifts = []
+        for key, value in self.data.items():
+            match = re.fullmatch(r"shift(\d+)", key)
+            if match and value:
+                shifts.append((int(match.group(1)), key, str(value)))
+        shifts.sort()
+        for (_n, _prev_key, prev_value), (_m, key, value) in zip(shifts, shifts[1:]):
+            if value == prev_value:
+                self.add_error(
+                    key,
+                    _("The next shift must be different from the previous shift."),
+                )
+
     def clean(self):
         cleaned_data = super().clean()
+        self._validate_consecutive_shifts()
         additional_shifts = []
         model_fields = list(self.instance.__dict__.keys())
 
@@ -1961,7 +1987,7 @@ class RotatingShiftAssignForm(ModelForm):
         labels = {
             "rotating_shift_id": _("Rotating Shift"),
             "start_date": _("Start date"),
-            "is_active": _("Is Active"),
+            "is_active": _("Active"),
             "rotate_every_weekend": _("Rotate every weekend"),
             "rotate_every": _("Rotate every"),
         }
@@ -2122,7 +2148,7 @@ class RotatingShiftAssignUpdateForm(ModelForm):
             "rotate_every_weekend": _("Rotate every weekend"),
             "rotate_every": _("Rotate every"),
             "based_on": _("Based on"),
-            "is_active": _("Is Active"),
+            "is_active": _("Active"),
         }
 
     def __init__(self, *args, **kwargs):
@@ -3111,8 +3137,51 @@ class DriverForm(forms.ModelForm):
 UserModel = get_user_model()
 
 
+def find_reset_user(identifier):
+    """
+    The user a password reset is for, from what was typed in the forgot-password
+    form: a username, or an email address (the employee's personal or work
+    email, or the login's own). None when nothing matches, or when an email
+    matches more than one account -- then the username has to be used.
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return None
+    user = HorillaUser.objects.filter(username=identifier).first()
+    if user:
+        return user
+    by_name = HorillaUser.objects.filter(username__iexact=identifier)
+    if by_name.count() == 1:
+        return by_name.first()
+    if "@" not in identifier:
+        return None
+    user_ids = set(
+        Employee._base_manager.filter(email__iexact=identifier).values_list(
+            "employee_user_id", flat=True
+        )
+    )
+    user_ids |= set(
+        Employee._base_manager.filter(
+            employee_work_info__email__iexact=identifier
+        ).values_list("employee_user_id", flat=True)
+    )
+    user_ids |= set(
+        HorillaUser.objects.filter(email__iexact=identifier).values_list(
+            "id", flat=True
+        )
+    )
+    user_ids.discard(None)
+    users = HorillaUser.objects.filter(id__in=user_ids, is_active=True)
+    return users.first() if users.count() == 1 else None
+
+
 class PassWordResetForm(forms.Form):
+    # A username or an email address; the field keeps its old name because the
+    # form is also posted by other callers (e.g. the employee invitation).
     email = forms.CharField()
+    # The address the reset link was sent to, set by save(); None when the
+    # account has no email address to send it to.
+    sent_to_email = None
 
     def send_mail(
         self,
@@ -3135,8 +3204,43 @@ class PassWordResetForm(forms.Form):
         if html_email_template_name is not None:
             html_email = loader.render_to_string(html_email_template_name, context)
             email_message.attach_alternative(html_email, "text/html")
+            # The company logo the HTML refers to as cid:company_logo
+            logo_path = context.get("logo_path")
+            if logo_path:
+                with open(logo_path, "rb") as logo_file:
+                    logo = MIMEImage(logo_file.read())
+                logo.add_header("Content-ID", "<company_logo>")
+                logo.add_header(
+                    "Content-Disposition",
+                    "inline",
+                    filename=os.path.basename(logo_path),
+                )
+                email_message.attach(logo)
 
         email_message.send()
+
+    @staticmethod
+    def get_branding(employee):
+        """
+        The name and logo the mail is sent under: the employee's company when
+        WHITE_LABELLING is on (else the headquarters company), Horilla when it
+        is off or no company has one.
+        """
+        name = "Horilla"
+        logo_path = finders.find("images/ui/horilla-sticker-round.png")
+        if getattr(settings, "WHITE_LABELLING", False):
+            company = None
+            try:
+                company = employee.get_company()
+            except Exception:
+                company = None
+            company = company or Company.objects.filter(hq=True).last()
+            if company:
+                name = company.company
+                icon = company.icon
+                if icon and os.path.exists(icon.path):
+                    logo_path = icon.path
+        return name, logo_path
 
     def get_users(self, email):
         """
@@ -3163,8 +3267,8 @@ class PassWordResetForm(forms.Form):
     def save(
         self,
         domain_override=None,
-        subject_template_name="registration/password_reset_subject.txt",
-        email_template_name="registration/password_reset_email.html",
+        subject_template_name="base/mail_templates/password_reset_subject.txt",
+        email_template_name="base/mail_templates/password_reset_email.txt",
         use_https=False,
         token_generator=default_token_generator,
         from_email=None,
@@ -3176,8 +3280,9 @@ class PassWordResetForm(forms.Form):
         Generate a one-use only link for resetting password and send it to the
         user.
         """
-        username = self.cleaned_data["email"]
-        user = HorillaUser.objects.get(username=username)
+        user = find_reset_user(self.cleaned_data["email"])
+        if user is None:
+            raise HorillaUser.DoesNotExist
         employee = user.employee_get
         email = employee.email
         work_mail = None
@@ -3213,14 +3318,25 @@ class PassWordResetForm(forms.Form):
             domain = current_site.domain
         if email:
             token = token_generator.make_token(user)
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            protocol = "https" if use_https else "http"
+            company_name, logo_path = self.get_branding(employee)
             context = {
                 "email": email,
                 "domain": domain,
                 "site_name": site_name,
-                "uid": urlsafe_base64_encode(force_bytes(user.pk)),
+                "uid": uid,
                 "user": user,
                 "token": token,
-                "protocol": "https" if use_https else "http",
+                "protocol": protocol,
+                "first_name": getattr(employee, "employee_first_name", "") or "",
+                "reset_url": f"{protocol}://{domain}"
+                + reverse(
+                    "password_reset_confirm", kwargs={"uidb64": uid, "token": token}
+                ),
+                "valid_hours": settings.PASSWORD_RESET_TIMEOUT // 3600,
+                "white_label_company_name": company_name,
+                "logo_path": logo_path,
                 **(extra_email_context or {}),
             }
             self.send_mail(
@@ -3231,6 +3347,7 @@ class PassWordResetForm(forms.Form):
                 email,
                 html_email_template_name=html_email_template_name,
             )
+            self.sent_to_email = email
 
 
 def validate_ip_or_cidr(value):
@@ -3356,27 +3473,59 @@ class HolidayForm(ModelForm):
             )
         return end_date
 
+    available_for_all = forms.BooleanField(
+        label=_("Available for All"),
+        required=False,
+        initial=True,
+        widget=forms.CheckboxInput(attrs={"class": "oh-switch__checkbox"}),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if cleaned_data.get("available_for_all"):
+            cleaned_data["department"] = Department.objects.none()
+            cleaned_data["job_position"] = JobPosition.objects.none()
+            cleaned_data["employees"] = Employee.objects.none()
+        elif not (
+            cleaned_data.get("department")
+            or cleaned_data.get("job_position")
+            or cleaned_data.get("employees")
+        ):
+            self.add_error(
+                "department",
+                _(
+                    "Select at least one department, job position or employee, "
+                    "or enable Available for All."
+                ),
+            )
+        return cleaned_data
+
     def save(self, commit=True):
         instance = super().save(commit=False)
         departments = self.cleaned_data.get("department")
         job_positions = self.cleaned_data.get("job_position")
         direct_employees = self.cleaned_data.get("employees")
-        instance.is_specific = bool(departments or job_positions or direct_employees)
+        instance.is_specific = not self.cleaned_data.get("available_for_all")
         instance.assigning_type = None
         if commit:
             instance.save()
             instance.department.set(departments or [])
             instance.job_position.set(job_positions or [])
             if instance.is_specific:
+                # Department / job position / employee selections are
+                # combined (union) into the concrete employee list.
                 condition = Q(pk__in=[])
                 if direct_employees:
                     condition |= Q(pk__in=direct_employees.values_list("pk", flat=True))
+                scope = Q(pk__in=[])
                 if departments:
-                    condition |= Q(employee_work_info__department_id__in=departments)
+                    scope |= Q(employee_work_info__department_id__in=departments)
                 if job_positions:
-                    condition |= Q(
-                        employee_work_info__job_position_id__in=job_positions
-                    )
+                    scope |= Q(employee_work_info__job_position_id__in=job_positions)
+                if instance.company_id_id:
+                    # a company-specific holiday only reaches that company
+                    scope &= Q(employee_work_info__company_id=instance.company_id)
+                condition |= scope
                 expanded = Employee.objects.filter(condition, is_active=True).distinct()
                 instance.employees.set(expanded)
             else:
@@ -3401,6 +3550,7 @@ class HolidayForm(ModelForm):
             f"{self.Meta.model()._meta.get_field('end_date').verbose_name}"
         )
         self.fields["is_specific"].widget = forms.HiddenInput()
+        self.fields["is_specific"].required = False
         self.fields["assigning_type"].widget = forms.HiddenInput()
         self.fields["assigning_type"].required = False
         self.fields["department"].required = False
@@ -3410,6 +3560,28 @@ class HolidayForm(ModelForm):
         for fname in ("department", "job_position", "employees"):
             self.fields[fname].widget.attrs.update({"class": "oh-select oh-select-2"})
         reload_queryset(self.fields)
+        # Empty company means the holiday applies to every company.
+        company_field = self.fields["company_id"]
+        company_field.required = False
+        company_field.empty_label = _("All Companies")
+        if self.instance.pk:
+            self.initial["available_for_all"] = not self.instance.is_specific
+        elif not self.is_bound:
+            request = getattr(_thread_locals, "request", None)
+            self.initial.setdefault("company_id", get_session_company(request))
+        self.order_fields(
+            [
+                "name",
+                "start_date",
+                "end_date",
+                "recurring",
+                "available_for_all",
+                "department",
+                "job_position",
+                "employees",
+                "company_id",
+            ]
+        )
 
 
 class HolidaysColumnExportForm(forms.Form):

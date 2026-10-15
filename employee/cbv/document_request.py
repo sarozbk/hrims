@@ -16,9 +16,11 @@ from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from django.utils.translation import gettext_noop
 
+from base.cbv.work_shift_tab import ProfileTabShellView
 from base.methods import (
     choosesubordinates,
     get_key_instances,
+    humanize_filter_tags,
     is_reportingmanager,
     paginator_qry,
 )
@@ -406,7 +408,12 @@ class DocumentRequestPipelineView(Pipeline):
         data_dict = get_key_instances(self.model, data_dict)
         for key in ("filter_applied", "nav_url", "referrer", "grouper", "page"):
             data_dict.pop(key, None)
+        # generic/filter_tags.html needs the label/extra maps next to filter_dict
+        data_dict, tag_labels, tag_extras = humanize_filter_tags(data_dict)
         context["filter_dict"] = data_dict
+        context["filter_tag_labels"] = tag_labels
+        context["filter_tag_extras"] = tag_extras
+        context["keys_to_remove"] = []
 
         context["saved_filters"] = self.request.GET
         context["stored_filters"] = horilla_views_models.SavedFilter.objects.filter(
@@ -498,6 +505,8 @@ class DocumentIndividualTabList(DocumentListView):
     List view for the Documents tab in employee individual & profile view
     """
 
+    show_saved_filters = False
+
     columns = [
         (_("Document"), "title"),
         (_("Status"), "document_status_display"),
@@ -535,3 +544,38 @@ class DocumentIndividualTabList(DocumentListView):
             pk = self.kwargs.get("pk")
             queryset = self.model.objects.filter(employee_id=pk)
         return HorillaListView.get_queryset(self, queryset, filtered, *args, **kwargs)
+
+
+@method_decorator(login_required, name="dispatch")
+@method_decorator(hx_request_required, name="dispatch")
+class DocumentIndividualTabShell(ProfileTabShellView):
+    """
+    Shell for the Documents profile tab: loads the nav (with the Create
+    button) and, through it, the employee's documents list.
+    """
+
+    shell_target_id = "document-shell"
+    nav_url_name = "employee-document-tab-nav"
+
+
+@method_decorator(login_required, name="dispatch")
+class DocumentIndividualNav(HorillaNavView):
+    """
+    Minimal nav (Create button only) for the Documents profile tab.
+    """
+
+    template_name = "generic/inline_nav.html"
+    nav_title = _("Documents")
+    hide_search = True
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        pk = self.request.resolver_match.kwargs.get("pk")
+        self.search_url = reverse("employee-document-tab-list", kwargs={"pk": pk})
+        self.search_swap_target = "#document-shell"
+        self.create_attrs = f"""
+            hx-get="{reverse('document-create', kwargs={'emp_id': pk})}"
+            hx-target="#genericModalBody"
+            data-toggle="oh-modal-toggle"
+            data-target="#genericModal"
+        """

@@ -377,6 +377,11 @@ class EmployeeWorkInformationForm(ModelForm):
             self.fields[field].widget.attrs["placeholder"] = self.fields[field].label
             if disable:
                 self.fields[field].disabled = True
+        # Pay is kept on the contract. A disabled field ignores what is posted and
+        # keeps the stored value, so saving this form never changes the old copy.
+        for name in ("basic_salary", "salary_hour"):
+            if name in self.fields:
+                self.fields[name].disabled = True
         field_names = {
             "Department": "department",
             "Job Position": "job_position",
@@ -573,7 +578,7 @@ excel_columns = [
     ("zip", _("Zip Code")),
     ("marital_status", _("Marital Status")),
     ("children", _("Children")),
-    ("is_active", _("Is active")),
+    ("is_active", _("Active")),
     ("emergency_contact", _("Emergency Contact")),
     ("emergency_contact_name", _("Emergency Contact Name")),
     ("emergency_contact_relation", _("Emergency Contact Relation")),
@@ -862,6 +867,11 @@ class DisciplinaryActionForm(ModelForm):
             if not employee_data.exists():
                 self.add_error("employee_id", _("This field is required."))
             cleaned_data["employee_id"] = employee_data
+
+        if cleaned_data.get("unit_in") == "hours" and not (
+            cleaned_data.get("hours") or ""
+        ).strip("0:"):
+            self.add_error("hours", _("This field is required."))
 
         return cleaned_data
 

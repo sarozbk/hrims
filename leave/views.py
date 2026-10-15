@@ -5,6 +5,8 @@ views.py
 import ast
 import contextlib
 import json
+import math
+import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from io import BytesIO
@@ -30,6 +32,7 @@ from xhtml2pdf import pisa
 
 from base.filters import PenaltyFilter
 from base.forms import PenaltyAccountForm
+from base.import_template_data import import_template_frame, write_import_xlsx
 from base.methods import (
     check_manager,
     choosesubordinates,
@@ -37,6 +40,7 @@ from base.methods import (
     eval_validate,
     export_data,
     filtersubordinates,
+    filtersubordinatesemployeemodel,
     get_date_range,
     get_key_instances,
     get_pagination,
@@ -54,7 +58,7 @@ from horilla.decorators import (
     permission_required,
 )
 from horilla.group_by import group_by_queryset
-from horilla.http.response import HorillaRedirect
+from horilla.http.response import HorillaRedirect, with_bulk_result
 from horilla.methods import (
     get_horilla_model_class,
     handle_no_permission,
@@ -96,17 +100,8 @@ def generate_error_report(error_list, error_data, file_name):
     data_frame = pd.DataFrame(error_data, columns=error_data.keys())
     response = HttpResponse(content_type="application/ms-excel")
     response["Content-Disposition"] = f'attachment; filename="{file_name}"'
-    writer = pd.ExcelWriter(response, engine="xlsxwriter")
-    try:
-        styled_data_frame = data_frame.style.map(
-            lambda x: "text-align: center", subset=pd.IndexSlice[:, :]
-        )
-        styled_data_frame.to_excel(writer, index=False, sheet_name="Sheet1")
-    except Exception:
-        data_frame.to_excel(writer, index=False, sheet_name="Sheet1")
-    worksheet = writer.sheets["Sheet1"]
-    worksheet.set_column("A:Z", 30)
-    writer.close()
+    # Same plain .xlsx layout as the "Download Template" files
+    write_import_xlsx(data_frame, response)
 
     def get_error_sheet(request):
         remove_dynamic_url(path_info)
@@ -1225,67 +1220,144 @@ def leave_request_approve(request, id, emp_id=None):
 
 @login_required
 @manager_can_enter("leave.change_leaverequest")
+def _posted_ids(request):
+    """
+    Ids posted either as repeated "ids" params or as one JSON list.
+    """
+    raw = request.POST.getlist("ids") or request.POST.getlist("request_ids")
+    if len(raw) == 1 and raw[0].strip().startswith("["):
+        try:
+            raw = json.loads(raw[0])
+        except ValueError:
+            raw = []
+    ids = []
+    for value in raw:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 def leave_request_bulk_approve(request):
-    if request.method == "POST":
-        request_ids = request.POST.getlist("ids")
-        filtered_ids = []
-        for request_id in request_ids:
-            leave_request = LeaveRequest.objects.get(id=int(request_id))
-            # Exclude requests where the employee is the current user
-            if leave_request.employee_id != request.user.employee_get:
-                filtered_ids.append(request_id)
-        if request.user.is_superuser:
-            filtered_ids = request_ids
-        for request_id in filtered_ids:
-            try:
-                leave_request = (
-                    LeaveRequest.objects.get(id=int(request_id)) if request_id else None
-                )
-                if leave_request.status == "requested" and (
-                    leave_request.start_date >= datetime.today().date()
-                    or request.user.has_perm("leave.change_leaverequest")
-                ):
-                    leave_request_approve(request, leave_request.id)
-                else:
-                    if leave_request.status == "approved":
-                        messages.info(
-                            request,
-                            _("{} {} request already approved").format(
-                                leave_request.employee_id, leave_request.leave_type_id
-                            ),
-                        )
-                    elif leave_request.start_date < datetime.today().date():
-                        messages.warning(
-                            request,
-                            _("{} {} request date exceeded").format(
-                                leave_request.employee_id, leave_request.leave_type_id
-                            ),
-                        )
-                    else:
-                        messages.warning(
-                            request,
-                            _("{} {} can't approve.").format(
-                                leave_request.employee_id, leave_request.leave_type_id
-                            ),
-                        )
-            except (ValueError, OverflowError, LeaveRequest.DoesNotExist):
-                messages.error(request, _("Leave request not found"))
-                pass
-    return HorillaRedirect(request)
+    """
+    Approve a bulk of leave requests. Reports how many ended up approved
+    (X-Hlv-Bulk-Result); the browser shows them in a result dialog.
+    """
+    if request.method != "POST":
+        return HorillaRedirect(request)
+    request_ids = _posted_ids(request)
+    pending = []
+    for request_id in request_ids:
+        leave_request = LeaveRequest.objects.filter(id=request_id).first()
+        # A request may not be approved by its own employee (superusers may).
+        if leave_request is None or (
+            not request.user.is_superuser
+            and leave_request.employee_id == request.user.employee_get
+        ):
+            continue
+        if leave_request.status == "requested" and (
+            leave_request.start_date >= datetime.today().date()
+            or request.user.has_perm("leave.change_leaverequest")
+        ):
+            pending.append(leave_request.id)
+    for request_id in pending:
+        leave_request_approve(request, request_id)
+    done = LeaveRequest.objects.filter(id__in=pending, status="approved").count()
+    return with_bulk_result(
+        JsonResponse({"message": "Success"}), done, len(request_ids) - done
+    )
+
+
+def _reject_leave_request(request, leave_request, reason):
+    """
+    Reject one leave request: give the approved days back, record the reason as a
+    comment, notify and mail the employee. Returns False when it was already
+    rejected. Shared by the single and the bulk reject views.
+    """
+    if leave_request.status == "rejected":
+        return False
+    employee_id = leave_request.employee_id
+    leave_type_id = leave_request.leave_type_id
+    available_leave = AvailableLeave.objects.get(
+        leave_type_id=leave_type_id, employee_id=employee_id
+    )
+    available_leave.available_days += leave_request.approved_available_days
+    available_leave.carryforward_days += leave_request.approved_carryforward_days
+    leave_request.approved_available_days = 0
+    leave_request.approved_carryforward_days = 0
+    leave_request.status = "rejected"
+    leave_request.leave_clashes_count = 0
+
+    if leave_request.multiple_approvals() and not request.user.is_superuser:
+        conditional_requests = leave_request.multiple_approvals()
+        approver = [
+            manager
+            for manager in conditional_requests["managers"]
+            if manager.employee_user_id == request.user
+        ]
+        condition_approval = LeaveRequestConditionApproval.objects.filter(
+            manager_id=approver[0], leave_request_id=leave_request
+        ).first()
+        condition_approval.is_approved = False
+        condition_approval.is_rejected = True
+        condition_approval.save()
+
+    leave_request.reject_reason = reason
+    leave_request.save()
+    available_leave.save()
+    comment = LeaverequestComment()
+    comment.request_id = leave_request
+    comment.employee_id = request.user.employee_get
+    comment.comment = leave_request.reject_reason
+    comment.save()
+
+    with contextlib.suppress(Exception):
+        notify.send(
+            request.user.employee_get,
+            recipient=leave_request.employee_id.employee_user_id,
+            verb=gettext_noop("Your leave request has been rejected."),
+            icon="people-circle",
+            redirect=reverse("user-request-view") + f"?id={leave_request.id}",
+        )
+
+    mail_thread = LeaveMailSendThread(request, leave_request, type="reject")
+    mail_thread.start()
+    return True
 
 
 @login_required
 @manager_can_enter("leave.change_leaverequest")
+@require_http_methods(["POST"])
 def leave_bulk_reject(request):
-    request_ids = request.POST.getlist("request_ids")
-
-    for request_id in request_ids:
-        leave_request = (
-            LeaveRequest.objects.get(id=int(request_id)) if request_id else None
+    """
+    Reject a bulk of leave requests with one reason. Reports how many were
+    rejected (X-Hlv-Bulk-Result); the browser shows them in a result dialog.
+    """
+    request_ids = _posted_ids(request)
+    reason = (request.POST.get("reason") or "").strip()
+    if not reason:
+        return with_bulk_result(
+            JsonResponse({"message": "A rejection reason is required."}, status=400),
+            0,
+            len(request_ids),
         )
-        leave_request_cancel(request, leave_request.id)
 
-    return HorillaRedirect(request)
+    done = 0
+    for request_id in request_ids:
+        leave_request = LeaveRequest.objects.filter(id=request_id).first()
+        if leave_request is None or not _may_act_on_leave_request(
+            request, leave_request, "leave.change_leaverequest"
+        ):
+            continue
+        try:
+            if _reject_leave_request(request, leave_request, reason):
+                done += 1
+        except (AvailableLeave.DoesNotExist, IndexError, AttributeError):
+            continue  # no leave balance / not an approver: counted as failed
+    return with_bulk_result(
+        JsonResponse({"message": "Success"}), done, len(request_ids) - done
+    )
 
 
 @login_required
@@ -1315,56 +1387,10 @@ def leave_request_cancel(request, id, emp_id=None):
         form = RejectForm(request.POST)
         if form.is_valid():
             employee_id = leave_request.employee_id
-            leave_type_id = leave_request.leave_type_id
-            available_leave = AvailableLeave.objects.get(
-                leave_type_id=leave_type_id, employee_id=employee_id
-            )
-            if leave_request.status != "rejected":
-                available_leave.available_days += leave_request.approved_available_days
-                available_leave.carryforward_days += (
-                    leave_request.approved_carryforward_days
-                )
-                leave_request.approved_available_days = 0
-                leave_request.approved_carryforward_days = 0
-                leave_request.status = "rejected"
-                leave_request.leave_clashes_count = 0
-
-                if leave_request.multiple_approvals() and not request.user.is_superuser:
-                    conditional_requests = leave_request.multiple_approvals()
-                    approver = [
-                        manager
-                        for manager in conditional_requests["managers"]
-                        if manager.employee_user_id == request.user
-                    ]
-                    condition_approval = LeaveRequestConditionApproval.objects.filter(
-                        manager_id=approver[0], leave_request_id=leave_request
-                    ).first()
-                    condition_approval.is_approved = False
-                    condition_approval.is_rejected = True
-                    condition_approval.save()
-
-                leave_request.reject_reason = form.cleaned_data["reason"]
-                leave_request.save()
-                available_leave.save()
-                comment = LeaverequestComment()
-                comment.request_id = leave_request
-                comment.employee_id = request.user.employee_get
-                comment.comment = leave_request.reject_reason
-                comment.save()
-
+            if _reject_leave_request(
+                request, leave_request, form.cleaned_data["reason"]
+            ):
                 messages.success(request, _("Leave request rejected successfully.."))
-                with contextlib.suppress(Exception):
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=leave_request.employee_id.employee_user_id,
-                        verb=gettext_noop("Your leave request has been rejected."),
-                        icon="people-circle",
-                        redirect=reverse("user-request-view")
-                        + f"?id={leave_request.id}",
-                    )
-
-                mail_thread = LeaveMailSendThread(request, leave_request, type="reject")
-                mail_thread.start()
             else:
                 messages.error(request, _("Leave request already rejected."))
 
@@ -1951,18 +1977,12 @@ def assign_leave_type_excel(_request):
         HttpResponse: An HTTP response containing an empty Excel template with predefined columns.
     """
     try:
-        columns = [
-            "Badge ID",
-            "Leave Type",
-            "Available Days",
-            "Carry Forward Days",
-        ]
-        data_frame = pd.DataFrame(columns=columns)
+        data_frame = import_template_frame("assign_leave")
         response = HttpResponse(content_type="application/ms-excel")
         response["Content-Disposition"] = (
             'attachment; filename="assign_leave_type_excel.xlsx"'
         )
-        data_frame.to_excel(response, index=False)
+        write_import_xlsx(data_frame, response)
         return response
     except Exception as exception:
         return HttpResponse(exception)
@@ -1977,89 +1997,179 @@ def assign_leave_type_import(request):
     It processes the data, checks for errors, and either assigns leave types to employees
     or generates an error report in the form of an Excel file.
     """
+    template_columns = [
+        "Employee Badge ID",
+        "Leave Type",
+        "Available Days",
+        "Carryforward Days",
+        "Total Leave Days",
+        "Assigned Date",
+    ]
     error_data = {
-        "Employee Badge ID": [],
-        "Leave Type": [],
+        **{column: [] for column in template_columns},
         "Badge ID Error": [],
         "Leave Type Error": [],
-        "Available Days": [],
-        "Carry Forward Days": [],
+        "Assigned Error": [],
+        "Available Days Error": [],
+        "Carryforward Days Error": [],
+        "Total Leave Days Error": [],
         "Assigned Date Error": [],
         "Other Errors": [],
     }
 
-    if request.method == "POST":
-        file = request.FILES["assign_leave_type_import"]
-        data_frame = pd.read_excel(file)
-        assign_leave_dicts = data_frame.to_dict("records")
+    def is_blank(value):
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return bool(pd.isna(value))
 
-        # Pre-fetch all employees and leave types
+    def parse_days(row, column, default):
+        """Return (days, error). Blank falls back to `default`."""
+        value = row.get(column)
+        if is_blank(value):
+            return default, None
+        try:
+            days = float(value)
+        except (TypeError, ValueError):
+            return None, _("Must be a number.")
+        if math.isnan(days) or math.isinf(days) or days < 0:
+            return None, _("Must be a non-negative number.")
+        return days, None
+
+    def popup(created, errors, path_info=None):
+        return HttpResponse(
+            render_to_string(
+                "import_popup.html",
+                {
+                    "created_count": created,
+                    "error_count": errors,
+                    "model": _("Leave Balances"),
+                    "path_info": path_info,
+                },
+            )
+        )
+
+    if request.method == "POST":
+        file = request.FILES.get("assign_leave_type_import")
+        if not file:
+            messages.error(request, _("Please choose a file to import."))
+            return popup(0, 0)
+
+        error_list = []
+        assign_leave_dicts = []
+        try:
+            data_frame = pd.read_excel(file, dtype=object)
+        except Exception:
+            data_frame = None
+            error_list.append(
+                {
+                    "Other Errors": _(
+                        "The file could not be read. Please upload a valid .xlsx file."
+                    )
+                }
+            )
+        if data_frame is not None:
+            data_frame.columns = [str(c).strip() for c in data_frame.columns]
+            missing = [
+                c
+                for c in ("Employee Badge ID", "Leave Type")
+                if c not in data_frame.columns
+            ]
+            if missing:
+                error_list.append(
+                    {
+                        "Other Errors": _(
+                            "Missing required column(s): {}. Please use the template."
+                        ).format(", ".join(missing))
+                    }
+                )
+            else:
+                assign_leave_dicts = data_frame.dropna(how="all").to_dict("records")
+
         employees = {
-            emp.badge_id.lower(): emp for emp in Employee.objects.all() if emp.badge_id
+            emp.badge_id.strip().lower(): emp
+            for emp in Employee.objects.all()
+            if emp.badge_id
         }
-        leave_types = {lt.name.lower(): lt for lt in LeaveType.objects.all()}
+        leave_types = {lt.name.strip().lower(): lt for lt in LeaveType.objects.all()}
         existing = {
-            (al.leave_type_id.id, al.employee_id.id): al
+            (al.leave_type_id_id, al.employee_id_id)
             for al in AvailableLeave.objects.all()
         }
 
-        assign_leave_list, error_list = [], []
+        assign_leave_list = []
+        seen = set()
 
         for row in assign_leave_dicts:
-            badge_id = str(row.get("Employee Badge ID", "")).strip().lower()
-            leave_type_name = str(row.get("Leave Type", "")).strip().lower()
+            badge_raw = row.get("Employee Badge ID")
+            type_raw = row.get("Leave Type")
+            badge_id = "" if is_blank(badge_raw) else str(badge_raw).strip().lower()
+            type_name = "" if is_blank(type_raw) else str(type_raw).strip().lower()
             employee = employees.get(badge_id)
-            leave_type = leave_types.get(leave_type_name)
+            leave_type = leave_types.get(type_name)
+            errors = {}
 
-            if not employee:
-                row["Badge ID Error"] = _("This badge id does not exist.")
-                error_list.append(row)
-                continue
-            if not leave_type:
-                row["Leave Type Error"] = _("This leave type does not exist.")
-                error_list.append(row)
-                continue
+            if not badge_id:
+                errors["Badge ID Error"] = _("Employee Badge ID is required.")
+            elif not employee:
+                errors["Badge ID Error"] = _("This badge id does not exist.")
+            if not type_name:
+                errors["Leave Type Error"] = _("Leave Type is required.")
+            elif not leave_type:
+                errors["Leave Type Error"] = _("This leave type does not exist.")
 
-            if (leave_type.id, employee.id) in existing:
-                row["Assigned Error"] = _(
-                    "Leave type has already been assigned to the employee."
-                )
-                error_list.append(row)
-                continue
+            if employee and leave_type:
+                key = (leave_type.id, employee.id)
+                if key in existing:
+                    errors["Assigned Error"] = _(
+                        "Leave type has already been assigned to the employee."
+                    )
+                elif key in seen:
+                    errors["Assigned Error"] = _(
+                        "Duplicate row: this employee and leave type appear more than once in the file."
+                    )
 
-            # Extract optional fields # 779
-            available_days = row.get("Available Days")
-            carryforward_days = row.get("Carryforward Days")
-            total_leave_days = row.get("Total Leave Days")
-            assigned_date_raw = row.get("Assigned Date")
-
-            # Apply defaults when missing
-            if pd.isna(available_days) or available_days == "":
-                available_days = leave_type.total_days
-            if pd.isna(carryforward_days) or carryforward_days == "":
-                carryforward_days = 0
-            if pd.isna(total_leave_days) or total_leave_days == "":
-                total_leave_days = available_days + carryforward_days
-
-            assigned_date = parse_excel_date(assigned_date_raw) or (
-                timezone.now().date()
-                if isinstance(assigned_date_raw, float)
-                and math.isnan(assigned_date_raw)
-                else None
+            available_days, err = parse_days(
+                row, "Available Days", leave_type.total_days if leave_type else 0
             )
-            if not assigned_date:
-                row["Other Errors"] = _(
-                    "Invalid date format. Please use YYYY-MM-DD or a supported format."
+            if err:
+                errors["Available Days Error"] = err
+            carryforward_days, err = parse_days(row, "Carryforward Days", 0)
+            if err:
+                errors["Carryforward Days Error"] = err
+            if available_days is not None and carryforward_days is not None:
+                total_leave_days, err = parse_days(
+                    row, "Total Leave Days", available_days + carryforward_days
                 )
+            else:
+                total_leave_days, err = parse_days(row, "Total Leave Days", 0)
+            if err:
+                errors["Total Leave Days Error"] = err
+
+            assigned_date_raw = row.get("Assigned Date")
+            assigned_date = None
+            if is_blank(assigned_date_raw):
+                assigned_date = timezone.now().date()
+            else:
+                assigned_date = parse_excel_date(assigned_date_raw)
+                if not assigned_date:
+                    errors["Assigned Date Error"] = _(
+                        "Invalid date format. Please use YYYY-MM-DD or a supported format."
+                    )
+
+            if errors:
+                row.update(errors)
                 error_list.append(row)
                 continue
 
+            seen.add((leave_type.id, employee.id))
             available_leave = AvailableLeave(
                 leave_type_id=leave_type,
                 employee_id=employee,
-                available_days=float(available_days),
-                carryforward_days=float(carryforward_days),
-                total_leave_days=float(total_leave_days),
+                available_days=available_days,
+                carryforward_days=carryforward_days,
+                total_leave_days=total_leave_days,
                 assigned_date=assigned_date,
             )
             if carryforward_days:
@@ -2068,29 +2178,294 @@ def assign_leave_type_import(request):
                     available_leave.reset_date = leave_type.leave_type_next_reset_date()
                 except Exception:
                     pass
-
             assign_leave_list.append(available_leave)
 
-        # Bulk create available leaves
         if assign_leave_list:
             AvailableLeave.objects.bulk_create(assign_leave_list)
 
-        # Generate error report if there are errors
         path_info = None
         if error_list:
             path_info = generate_error_report(
                 error_list, error_data, "AssignLeaveError.xlsx"
             )
-
-        context = {
-            "created_count": len(assign_leave_dicts) - len(error_list),
-            "error_count": len(error_list),
-            "model": _("Leave Balances"),
-            "path_info": path_info,
-        }
-        html = render_to_string("import_popup.html", context)
-        return HttpResponse(html)
+        return popup(len(assign_leave_list), len(error_list), path_info)
     return HttpResponse("")
+
+
+@login_required
+@manager_can_enter("leave.add_leaverequest")
+def leave_request_excel(_request):
+    """
+    Generate an example Excel template for importing leave requests.
+    """
+    try:
+        data_frame = import_template_frame("leave_request")
+        response = HttpResponse(content_type="application/ms-excel")
+        response["Content-Disposition"] = (
+            'attachment; filename="leave_request_excel.xlsx"'
+        )
+        write_import_xlsx(data_frame, response)
+        return response
+    except Exception as exception:
+        return HttpResponse(exception)
+
+
+@login_required
+@hx_request_required
+@manager_can_enter("leave.add_leaverequest")
+def leave_request_import(request):
+    """
+    Import leave requests from an uploaded Excel/CSV file.
+
+    Every row goes through LeaveRequestCreationForm, so it is held to the same
+    rules as a request raised from the form (assigned leave type, balance,
+    overlap, restricted days, ...). Valid rows are created; invalid rows are
+    returned in an error workbook with the reason beside each. Mail and
+    notifications are not sent for imported rows.
+    """
+    template_columns = [
+        "Badge ID",
+        "Leave Type",
+        "Start Date",
+        "Start Date Breakdown",
+        "End Date",
+        "End Date Breakdown",
+        "Description",
+    ]
+    error_data = {
+        **{column: [] for column in template_columns},
+        "Badge ID Error": [],
+        "Leave Type Error": [],
+        "Start Date Error": [],
+        "Start Date Breakdown Error": [],
+        "End Date Error": [],
+        "End Date Breakdown Error": [],
+        "Description Error": [],
+        "Requested Days Error": [],
+        "Leave Balance Error": [],
+        "Overlapping Leave Error": [],
+        "Past Date Error": [],
+        "Restricted Days Error": [],
+        "Attachment Error": [],
+        "Other Errors": [],
+    }
+    breakdowns = {
+        "full day": "full_day",
+        "full_day": "full_day",
+        "first half": "first_half",
+        "first_half": "first_half",
+        "second half": "second_half",
+        "second_half": "second_half",
+    }
+    # form field -> error column
+    error_columns = {
+        "employee_id": "Badge ID Error",
+        "leave_type_id": "Leave Type Error",
+        "start_date": "Start Date Error",
+        "start_date_breakdown": "Start Date Breakdown Error",
+        "end_date": "End Date Error",
+        "end_date_breakdown": "End Date Breakdown Error",
+        "description": "Description Error",
+    }
+
+    # Rule failures raised by the model's clean(), which come back as plain
+    # messages rather than per-field errors -- bucketed by what they are about
+    # so the error sheet says which rule a row broke.
+    message_columns = (
+        ("sufficient leave balance", "Leave Balance Error"),
+        ("is zero", "Requested Days Error"),
+        ("already has a leave request", "Overlapping Leave Error"),
+        ("past dates", "Past Date Error"),
+        ("restricted", "Restricted Days Error"),
+        ("attachment", "Attachment Error"),
+        ("end date should not be less", "End Date Error"),
+        ("breakdown", "End Date Breakdown Error"),
+    )
+
+    def error_column(field, message):
+        if field in error_columns:
+            return error_columns[field]
+        if field == "attachment":
+            return "Attachment Error"
+        lowered = str(message).lower()
+        for needle, column in message_columns:
+            if needle in lowered:
+                return column
+        return "Other Errors"
+
+    def is_blank(value):
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return bool(pd.isna(value))
+
+    def text(value):
+        return "" if is_blank(value) else str(value).strip()
+
+    def to_date(value):
+        parsed = parse_excel_date(value)
+        if isinstance(parsed, datetime):
+            return parsed.date()
+        return parsed
+
+    def popup(created, errors, path_info=None):
+        return HttpResponse(
+            render_to_string(
+                "import_popup.html",
+                {
+                    "created_count": created,
+                    "error_count": errors,
+                    "model": _("Leave Requests"),
+                    "path_info": path_info,
+                },
+            )
+        )
+
+    if request.method != "POST":
+        return HttpResponse("")
+
+    file = request.FILES.get("leave_request_import")
+    if not file:
+        messages.error(request, _("Please choose a file to import."))
+        return popup(0, 0)
+
+    error_list = []
+    rows = []
+    try:
+        if file.name.lower().endswith(".csv"):
+            data_frame = pd.read_csv(file, dtype=object)
+        else:
+            data_frame = pd.read_excel(file, dtype=object)
+    except Exception:
+        data_frame = None
+        error_list.append(
+            {
+                "Other Errors": _(
+                    "The file could not be read. Please upload a valid .xlsx or .csv file."
+                )
+            }
+        )
+    if data_frame is not None:
+        data_frame.columns = [str(c).strip() for c in data_frame.columns]
+        missing = [
+            c
+            for c in ("Badge ID", "Leave Type", "Start Date", "End Date")
+            if c not in data_frame.columns
+        ]
+        if missing:
+            error_list.append(
+                {
+                    "Other Errors": _(
+                        "Missing required column(s): {}. Please use the template."
+                    ).format(", ".join(missing))
+                }
+            )
+        else:
+            rows = data_frame.dropna(how="all").to_dict("records")
+
+    # Only employees the user may raise leave for; anyone else reads as
+    # "does not exist" rather than confirming the badge is real.
+    employees = {
+        emp.badge_id.strip().lower(): emp
+        for emp in filtersubordinatesemployeemodel(
+            request, Employee.objects.all(), "leave.add_leaverequest"
+        )
+        if emp.badge_id
+    }
+    leave_types = {lt.name.strip().lower(): lt for lt in LeaveType.objects.all()}
+
+    created = 0
+    for row in rows:
+        badge = text(row.get("Badge ID")).lower()
+        type_name = text(row.get("Leave Type")).lower()
+        employee = employees.get(badge)
+        leave_type = leave_types.get(type_name)
+        errors = {}
+
+        if not badge:
+            errors["Badge ID Error"] = _("Badge ID is required.")
+        elif not employee:
+            errors["Badge ID Error"] = _("This badge id does not exist.")
+        if not type_name:
+            errors["Leave Type Error"] = _("Leave Type is required.")
+        elif not leave_type:
+            errors["Leave Type Error"] = _("This leave type does not exist.")
+
+        start_date = to_date(row.get("Start Date"))
+        if not start_date:
+            errors["Start Date Error"] = _(
+                "A valid start date is required (YYYY-MM-DD)."
+            )
+        # A blank end date means a single-day request.
+        end_date = (
+            start_date
+            if is_blank(row.get("End Date"))
+            else to_date(row.get("End Date"))
+        )
+        if not end_date:
+            errors["End Date Error"] = _("Invalid date format. Please use YYYY-MM-DD.")
+
+        breakdown_values = {}
+        for column, key in (
+            ("Start Date Breakdown", "start_date_breakdown"),
+            ("End Date Breakdown", "end_date_breakdown"),
+        ):
+            raw = text(row.get(column)).lower()
+            if not raw:
+                breakdown_values[key] = "full_day"
+            elif raw in breakdowns:
+                breakdown_values[key] = breakdowns[raw]
+            else:
+                errors[f"{column} Error"] = _(
+                    "Must be Full Day, First Half or Second Half."
+                )
+
+        description = text(row.get("Description"))
+        if not description:
+            errors["Description Error"] = _("Description is required.")
+
+        if not errors:
+            form = LeaveRequestCreationForm(
+                {
+                    "employee_id": employee.pk,
+                    "leave_type_id": leave_type.pk,
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "description": description,
+                    **breakdown_values,
+                }
+            )
+            if form.is_valid():
+                try:
+                    with transaction.atomic():
+                        leave_request = form.save(commit=False)
+                        leave_request.created_by = request.user.employee_get
+                        leave_request.save()
+                        if leave_type.require_approval == "no":
+                            leave_request.no_approval()
+                            leave_request.save()
+                    created += 1
+                    continue
+                except Exception as exception:
+                    errors["Other Errors"] = str(exception)
+            else:
+                for field, field_errors in form.errors.items():
+                    message = " ".join(field_errors)
+                    column = error_column(field, message)
+                    errors[column] = (
+                        f"{errors[column]} {message}" if column in errors else message
+                    )
+
+        row.update(errors)
+        error_list.append(row)
+
+    path_info = None
+    if error_list:
+        path_info = generate_error_report(
+            error_list, error_data, "LeaveRequestError.xlsx"
+        )
+    return popup(created, len(error_list), path_info)
 
 
 @login_required
@@ -3020,44 +3395,6 @@ def dashboard(request):
 
 
 @login_required
-def employee_dashboard(request):
-    """
-    function used to view Employee dashboard in the leave module.
-
-    Parameters:
-    request (HttpRequest): The HTTP request object.
-
-    Returns:
-    GET : return Employee dasboard template.
-    """
-    today = date.today()
-    # Use reverse OneToOne — Employee.objects is company-filtered and would
-    # raise DoesNotExist when the selected company is not the user's work company.
-    user = request.user.employee_get
-    leave_requests = LeaveRequest.objects.filter(employee_id=user)
-    requested = leave_requests.filter(status="requested")
-    approved = leave_requests.filter(status="approved")
-    rejected = leave_requests.filter(status="rejected")
-
-    holidays = Holidays.objects.filter(
-        Q(is_specific=False) | Q(employees=user), start_date__gte=today
-    )
-    next_holiday = (
-        holidays.order_by("start_date").first() if holidays.exists() else None
-    )
-
-    context = {
-        "leave_requests": leave_requests,
-        "requested": requested,
-        "approved": approved,
-        "rejected": rejected,
-        "next_holiday": next_holiday,
-        "dashboard": "dashboard",
-    }
-    return render(request, "leave/employee_dashboard.html", context)
-
-
-@login_required
 @hx_request_required
 def dashboard_leave_request(request):
     """
@@ -3215,17 +3552,34 @@ def department_leave_chart(request):
     ):
         return JsonResponse({"no_permission": True})
 
-    day = date.today()
-    if request.GET.get("date"):
-        day = request.GET.get("date")
-        day = datetime.strptime(day, "%Y-%m")
+    from_param = request.GET.get("from_date")
+    to_param = request.GET.get("to_date")
+    leave_request = LeaveRequest.objects.filter(
+        status="approved", employee_id__is_active=True
+    )
+    if from_param and to_param:
+        try:
+            range_start = date.fromisoformat(from_param)
+            range_end = date.fromisoformat(to_param)
+            leave_request = leave_request.filter(start_date__lte=range_end).filter(
+                Q(end_date__gte=range_start)
+                | Q(end_date__isnull=True, start_date__gte=range_start)
+            )
+        except ValueError:
+            day = date.today()
+            leave_request = leave_request.filter(
+                start_date__month=day.month, start_date__year=day.year
+            )
+    else:
+        day = date.today()
+        if request.GET.get("date"):
+            day = datetime.strptime(request.GET.get("date"), "%Y-%m")
+        leave_request = leave_request.filter(
+            start_date__month=day.month, start_date__year=day.year
+        )
 
     departments = Department.objects.all()
     department_counts = {dep.department: 0 for dep in departments}
-    leave_request = LeaveRequest.objects.filter(status="approved")
-    leave_request = leave_request.filter(
-        start_date__month=day.month, start_date__year=day.year
-    )
     leave_dates = []
     labels = []
     for leave in leave_request:
@@ -3319,53 +3673,146 @@ def leave_over_period(request):
         return JsonResponse({"no_permission": True})
 
     today = date.today()
-    if request.GET.get("period") == "month":
-        # Full current calendar month -- used by the main analytics
-        # dashboard, which wants the whole month's trend rather than just
-        # the current week.
-        start_of_month = today.replace(day=1)
-        next_month = start_of_month.replace(day=28) + timedelta(days=4)
-        end_of_month = next_month.replace(day=1) - timedelta(days=1)
-        period_dates = [
-            start_of_month + timedelta(days=i)
-            for i in range((end_of_month - start_of_month).days + 1)
-        ]
-    else:
-        start_of_week = today - timedelta(days=today.weekday())
-        period_dates = [start_of_week + timedelta(days=i) for i in range(6)]
-    leave_in_period = []
-
+    from_param = request.GET.get("from_date")
+    to_param = request.GET.get("to_date")
+    period_dates = None
+    bucket = "day"
+    if from_param and to_param:
+        try:
+            range_start = date.fromisoformat(from_param)
+            range_end = date.fromisoformat(to_param)
+            period_dates = [
+                range_start + timedelta(days=i)
+                for i in range((range_end - range_start).days + 1)
+            ]
+            bucket = request.GET.get("bucket")
+            if bucket not in ("day", "week", "month"):
+                span = len(period_dates)
+                # A whole calendar month is at most 31 days and should read day by day.
+                bucket = "day" if span <= 31 else "week" if span <= 180 else "month"
+        except ValueError:
+            period_dates = None
+    if period_dates is None:
+        if request.GET.get("period") == "month":
+            # Full current calendar month -- used by the main analytics
+            # dashboard, which wants the whole month's trend rather than just
+            # the current week.
+            start_of_month = today.replace(day=1)
+            next_month = start_of_month.replace(day=28) + timedelta(days=4)
+            end_of_month = next_month.replace(day=1) - timedelta(days=1)
+            period_dates = [
+                start_of_month + timedelta(days=i)
+                for i in range((end_of_month - start_of_month).days + 1)
+            ]
+        else:
+            start_of_week = today - timedelta(days=today.weekday())
+            period_dates = [start_of_week + timedelta(days=i) for i in range(6)]
     leave_request = LeaveRequest.objects.filter(
         status="approved",
+        employee_id__is_active=True,
         start_date__lte=period_dates[-1],
     ).filter(
         Q(end_date__gte=period_dates[0])
         | Q(end_date__isnull=True, start_date__gte=period_dates[0])
     )
-    leave_dates = []
-    for leave in leave_request:
-        for leave_date in leave.requested_dates():
-            leave_dates.append(leave_date)
+    by_department = request.GET.get("group") == "department"
+    # ``count=requests`` counts each approved request once per point instead of
+    # adding up the days it covers, so a two-day leave is one, not two.
+    count_requests = request.GET.get("count") == "requests"
+    per_day = {}
+    per_dept_day = {}
+    request_dates = []  # (department, request pk, its days) -- for count=requests
+    for leave in leave_request.select_related(
+        "employee_id__employee_work_info__department_id"
+    ):
+        dept_name = ""
+        if by_department:
+            work_info = getattr(leave.employee_id, "employee_work_info", None)
+            dept = getattr(work_info, "department_id", None)
+            dept_name = dept.department if dept else _("No department")
+        leave_dates = list(leave.requested_dates())
+        request_dates.append((dept_name, leave.pk, leave_dates))
+        for leave_date in leave_dates:
+            per_day[leave_date] = per_day.get(leave_date, 0) + 1
+            if by_department:
+                days = per_dept_day.setdefault(dept_name, {})
+                days[leave_date] = days.get(leave_date, 0) + 1
 
-    filtered_dates = [day for day in leave_dates if day in period_dates]
+    # Group the days into buckets (a bucket is clipped to the requested range).
+    def bucket_key(day):
+        if bucket == "week":
+            return day - timedelta(days=day.weekday())
+        if bucket == "month":
+            return day.replace(day=1)
+        return day
+
+    buckets = {}
     for period_date in period_dates:
-        days = [
-            filtered_date
-            for filtered_date in filtered_dates
-            if filtered_date == period_date
-        ]
-        leave_in_period.append(len(days))
-    dataset = (
-        {
-            "label": _("Leave Trends"),
-            "data": leave_in_period,
-        },
-    )
+        key = bucket_key(period_date)
+        entry = buckets.setdefault(key, {"first": period_date, "last": period_date})
+        entry["last"] = period_date
 
-    labels = [period_date.strftime("%d-%m-%Y") for period_date in period_dates]
+    def bucketed(day_counts):
+        totals = {key: 0 for key in buckets}
+        for day, n in day_counts.items():
+            key = bucket_key(day)
+            if key in totals and period_dates[0] <= day <= period_dates[-1]:
+                totals[key] += n
+        return list(totals.values())
+
+    def unique_requests(department=None):
+        """Distinct requests with at least one day in each bucket."""
+        seen = {key: set() for key in buckets}
+        for dept_name, pk, days in request_dates:
+            if department is not None and dept_name != department:
+                continue
+            for day in days:
+                if period_dates[0] <= day <= period_dates[-1]:
+                    seen[bucket_key(day)].add(pk)
+        return [len(pks) for pks in seen.values()]
+
+    labels = []
+    for key, entry in buckets.items():
+        if bucket == "week":
+            first, last = entry["first"], entry["last"]
+            labels.append(
+                first.strftime("%d %b")
+                if first == last
+                else f"{first.strftime('%d %b')} - {last.strftime('%d %b')}"
+            )
+        elif bucket == "month":
+            labels.append(key.strftime("%b %Y"))
+        else:
+            labels.append(key.strftime("%d-%m-%Y"))
+
+    if by_department:
+        # Every department gets a line (flat if it had no leave), busiest first.
+        for name in Department.objects.values_list("department", flat=True):
+            per_dept_day.setdefault(name, {})
+        dataset = [
+            {
+                "label": name,
+                "data": unique_requests(name) if count_requests else bucketed(days),
+            }
+            for name, days in per_dept_day.items()
+        ]
+        dataset.sort(key=lambda d: (-sum(d["data"]), str(d["label"])))
+    else:
+        dataset = (
+            {
+                "label": _("Leave Trends"),
+                "data": unique_requests() if count_requests else bucketed(per_day),
+            },
+        )
 
     response = {
         "labels": labels,
+        # The exact days each bucket covers, so a caller can open the leave
+        # behind a point without parsing the display label back into dates.
+        "ranges": [
+            {"from": entry["first"].isoformat(), "to": entry["last"].isoformat()}
+            for entry in buckets.values()
+        ],
         "dataset": dataset,
     }
     return JsonResponse(response)
@@ -3814,6 +4261,81 @@ def leave_allocation_request_update(request, req_id):
         return HorillaRedirect(request)
 
 
+def _approve_leave_allocation(request, leave_allocation_request):
+    """
+    Approve one leave allocation request: add the days to the employee's
+    balance and notify them. Returns False unless it is still "requested".
+    Shared by the single and the bulk approve views.
+    """
+    if leave_allocation_request.status != "requested":
+        return False
+    employee = leave_allocation_request.employee_id
+    if (
+        employee.available_leave.all()
+        .filter(leave_type_id=leave_allocation_request.leave_type_id)
+        .exists()
+    ):
+        available_leave = (
+            employee.available_leave.all()
+            .filter(leave_type_id=leave_allocation_request.leave_type_id)
+            .first()
+        )
+    else:
+        available_leave = AvailableLeave(
+            leave_type_id=leave_allocation_request.leave_type_id,
+            employee_id=employee,
+        )
+    available_leave.available_days += leave_allocation_request.requested_days
+    available_leave.save()
+    leave_allocation_request.status = "approved"
+    leave_allocation_request.save()
+    with contextlib.suppress(Exception):
+        notify.send(
+            request.user.employee_get,
+            recipient=leave_allocation_request.employee_id.employee_user_id,
+            verb=gettext_noop("Your leave allocation request has been approved"),
+            icon="people-circle",
+            redirect=reverse("leave-allocation-request-view")
+            + f"?id={leave_allocation_request.id}",
+        )
+    return True
+
+
+def _reject_leave_allocation(request, leave_allocation_request, reason):
+    """
+    Reject one leave allocation request (taking back days that were already
+    granted) and notify the employee. Returns False unless it is "requested"
+    or "approved". Shared by the single and the bulk reject views.
+    """
+    if leave_allocation_request.status not in ("requested", "approved"):
+        return False
+    leave_allocation_request.reject_reason = reason
+    if leave_allocation_request.status == "approved":
+        leave_type = leave_allocation_request.leave_type_id
+        requested_days = leave_allocation_request.requested_days
+        available_leave = AvailableLeave.objects.filter(
+            leave_type_id=leave_type,
+            employee_id=leave_allocation_request.employee_id,
+        ).first()
+        if available_leave:
+            available_leave.available_days = max(
+                0, available_leave.available_days - requested_days
+            )
+            available_leave.save()
+    leave_allocation_request.status = "rejected"
+    leave_allocation_request.save()
+    with contextlib.suppress(Exception):
+        notify.send(
+            request.user.employee_get,
+            recipient=leave_allocation_request.employee_id.employee_user_id,
+            verb=gettext_noop("Your leave allocation request has been rejected"),
+            icon="people-circle",
+            redirect=reverse("leave-allocation-request-view")
+            + f"?id={leave_allocation_request.id}",
+        )
+    return True
+
+
 @login_required
 @leave_allocation_reject_permission()
 def leave_allocation_request_approve(request, req_id):
@@ -3828,37 +4350,8 @@ def leave_allocation_request_approve(request, req_id):
     GET :It returns to the default leave allocation request view template.
     """
     leave_allocation_request = LeaveAllocationRequest.objects.get(id=req_id)
-    if leave_allocation_request.status == "requested":
-        employee = leave_allocation_request.employee_id
-        if (
-            employee.available_leave.all()
-            .filter(leave_type_id=leave_allocation_request.leave_type_id)
-            .exists()
-        ):
-            available_leave = (
-                employee.available_leave.all()
-                .filter(leave_type_id=leave_allocation_request.leave_type_id)
-                .first()
-            )
-        else:
-            available_leave = AvailableLeave(
-                leave_type_id=leave_allocation_request.leave_type_id,
-                employee_id=employee,
-            )
-        available_leave.available_days += leave_allocation_request.requested_days
-        available_leave.save()
-        leave_allocation_request.status = "approved"
-        leave_allocation_request.save()
+    if _approve_leave_allocation(request, leave_allocation_request):
         messages.success(request, _("Leave allocation request approved successfully"))
-        with contextlib.suppress(Exception):
-            notify.send(
-                request.user.employee_get,
-                recipient=leave_allocation_request.employee_id.employee_user_id,
-                verb=gettext_noop("Your leave allocation request has been approved"),
-                icon="people-circle",
-                redirect=reverse("leave-allocation-request-view")
-                + f"?id={leave_allocation_request.id}",
-            )
     else:
         messages.error(request, _("The leave allocation request can't be approved"))
     return HorillaRedirect(request)
@@ -3888,35 +4381,12 @@ def leave_allocation_request_reject(request, req_id):
         if request.method == "POST":
             form = LeaveAllocationRequestRejectForm(request.POST)
             if form.is_valid():
-                leave_allocation_request.reject_reason = form.cleaned_data["reason"]
-                if leave_allocation_request.status == "approved":
-                    leave_type = leave_allocation_request.leave_type_id
-                    requested_days = leave_allocation_request.requested_days
-                    available_leave = AvailableLeave.objects.filter(
-                        leave_type_id=leave_type,
-                        employee_id=leave_allocation_request.employee_id,
-                    ).first()
-                    available_leave.available_days = max(
-                        0, available_leave.available_days - requested_days
-                    )
-
-                    available_leave.save()
-                leave_allocation_request.status = "rejected"
-                leave_allocation_request.save()
+                _reject_leave_allocation(
+                    request, leave_allocation_request, form.cleaned_data["reason"]
+                )
                 messages.success(
                     request, _("Leave allocation request rejected successfully")
                 )
-                with contextlib.suppress(Exception):
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=leave_allocation_request.employee_id.employee_user_id,
-                        verb=gettext_noop(
-                            "Your leave allocation request has been rejected"
-                        ),
-                        icon="people-circle",
-                        redirect=reverse("leave-allocation-request-view")
-                        + f"?id={leave_allocation_request.id}",
-                    )
                 return HorillaRedirect(request)
         return render(
             request,
@@ -3985,6 +4455,86 @@ def leave_allocation_request_delete(request, req_id):
     else:
 
         return redirect(reverse("leave-allocation-request-view"))
+
+
+def _can_decide_leave_allocation(request, leave_allocation_request):
+    """Approve / reject right, same rule as leave_allocation_reject_permission."""
+    work_info = getattr(
+        leave_allocation_request.employee_id, "employee_work_info", None
+    )
+    manager = work_info.reporting_manager_id if work_info else None
+    return request.user.has_perm("leave.delete_leaveallocationrequest") or (
+        manager is not None and request.user.employee_get == manager
+    )
+
+
+def _can_delete_leave_allocation(request, leave_allocation_request):
+    """Delete right, same rule as leave_allocation_delete_permission."""
+    return _can_decide_leave_allocation(request, leave_allocation_request) or (
+        request.user.employee_get == leave_allocation_request.employee_id
+    )
+
+
+@login_required
+@require_http_methods(["POST"])
+def leave_allocation_bulk_approve(request):
+    """
+    Approve a bulk of leave allocation requests. Reports how many were approved
+    (X-Hlv-Bulk-Result); the browser shows them in a result dialog.
+    """
+    ids = _posted_ids(request)
+    done = 0
+    for req_id in ids:
+        allocation = LeaveAllocationRequest.objects.filter(id=req_id).first()
+        if allocation and _can_decide_leave_allocation(request, allocation):
+            if _approve_leave_allocation(request, allocation):
+                done += 1
+    return with_bulk_result(JsonResponse({"message": "Success"}), done, len(ids) - done)
+
+
+@login_required
+@require_http_methods(["POST"])
+def leave_allocation_bulk_reject(request):
+    """
+    Reject a bulk of leave allocation requests with one reason. Reports how many
+    were rejected (X-Hlv-Bulk-Result).
+    """
+    ids = _posted_ids(request)
+    reason = (request.POST.get("reason") or "").strip()
+    if not reason:
+        return with_bulk_result(
+            JsonResponse({"message": "A rejection reason is required."}, status=400),
+            0,
+            len(ids),
+        )
+    done = 0
+    for req_id in ids:
+        allocation = LeaveAllocationRequest.objects.filter(id=req_id).first()
+        if allocation and _can_decide_leave_allocation(request, allocation):
+            if _reject_leave_allocation(request, allocation, reason):
+                done += 1
+    return with_bulk_result(JsonResponse({"message": "Success"}), done, len(ids) - done)
+
+
+@login_required
+@require_http_methods(["POST"])
+def leave_allocation_bulk_delete(request):
+    """
+    Delete a bulk of leave allocation requests. Only "requested" ones can be
+    deleted, the same rows whose Delete button is enabled in the list; approved
+    and rejected ones are left alone. The browser works the Total / Deleted /
+    Failed numbers out from which ids still exist, so no counts are returned here.
+    """
+    for req_id in _posted_ids(request):
+        allocation = LeaveAllocationRequest.objects.filter(id=req_id).first()
+        if (
+            allocation
+            and allocation.status == "requested"
+            and _can_delete_leave_allocation(request, allocation)
+        ):
+            with contextlib.suppress(ProtectedError):
+                allocation.delete()
+    return JsonResponse({"message": "Success"})
 
 
 @login_required

@@ -564,9 +564,86 @@
         background: var(--oh-filter-accent, var(--primary-600, #e54f38)) !important;
     }
 
+    /* Classic hover/focus-within dropdown: forced shut after "Apply"
+       until the pointer leaves it (see the .filterButton handler below). */
+    .dropdown-content.filter-force-closed {
+        opacity: 0 !important;
+        visibility: hidden !important;
+    }
+
     .oh-filter-modern .filterButton {
         border-radius: 8px;
         margin-top: 4px;
+    }
+
+    body.dark .oh-filter-panel {
+        background: #242424;
+        box-shadow: -8px 0 30px 0 rgb(0 0 0 / 50%);
+    }
+    body.dark .oh-filter-panel__header,
+    body.dark .oh-filter-panel__search,
+    body.dark .oh-filter-panel__footer,
+    body.dark .oh-filter-modern .oh-accordion + .oh-accordion,
+    body.dark .oh-filter-modern .oh-accordion--top-divider {
+        border-color: #444444;
+    }
+    body.dark .oh-filter-panel__header h3,
+    body.dark .oh-checkbox-list__item {
+        color: #ffffff;
+    }
+    body.dark .oh-filter-panel__close {
+        background: #333333;
+        color: #dfdfdf;
+    }
+    body.dark .oh-filter-panel__close:hover {
+        background: #444444;
+    }
+    body.dark .oh-filter-panel__search input {
+        background: #1a1a1a;
+        border-color: #656565;
+        color: #dfdfdf;
+    }
+    body.dark .oh-filter-panel__search input:focus {
+        background: #111111;
+    }
+    body.dark .oh-filter-modern .oh-accordion-header {
+        background: transparent !important;
+        color: #ffffff !important;
+    }
+    body.dark .oh-filter-modern .oh-label {
+        color: #bbbbbb !important;
+    }
+    body.dark .oh-filter-modern .oh-input,
+    body.dark .oh-filter-modern select:not(.oh-select-ajax),
+    body.dark .oh-filter-modern .oh-select {
+        background: #1a1a1a !important;
+        border-color: #656565 !important;
+        color: #dfdfdf !important;
+    }
+    body.dark .oh-filter-modern .select2-container--default .select2-selection--single {
+        background: #1a1a1a !important;
+        border-color: #656565 !important;
+    }
+    body.dark .oh-filter-modern .select2-container--default .select2-selection--single .select2-selection__rendered {
+        color: #dfdfdf;
+    }
+    body.dark .oh-filter-modern .select2-container--default .select2-selection--single .select2-selection__placeholder {
+        color: #9c9a92;
+    }
+    body.dark .oh-segmented,
+    body.dark .oh-segmented__item {
+        border-color: #656565;
+        color: #dfdfdf;
+    }
+    body.dark .oh-custom-filter-row {
+        background: #1a1a1a;
+        border-color: #444444;
+    }
+    body.dark .oh-custom-filter-remove {
+        background: #333333;
+    }
+    body.dark .oh-custom-filter-remove:hover {
+        background: #4a2622;
     }
 </style>
 <script>
@@ -593,6 +670,41 @@
             if (e.key === 'Escape' && $('#modernFilterPanel').hasClass('oh-filter-panel--open')) {
                 toggleModernFilterPanel(false);
             }
+        });
+
+        var liveFilterTimer;
+        $(document).on('change input', '.navFilterForm #modernFilterPanel :input, .navFilterForm .dropdown-content :input', function (e) {
+            var el = this;
+            if (!el.name || el.name === 'search' || $(el).is('button, [type=button], [type=submit]')) return;
+            if ($(el).closest('.oh-custom-filter-row, #nestedGroupByLevels').length) return;
+            // 'input' only for free-text/number; others wait for 'change'.
+            if (e.type === 'input' && !$(el).is('input[type=text], input[type=search], input[type=number], textarea')) return;
+            var form = $(el).closest('form')[0];
+            if (!form) return;
+            clearTimeout(liveFilterTimer);
+            liveFilterTimer = setTimeout(function () {
+                if (form.checkValidity()) form.requestSubmit();
+            }, e.type === 'input' ? 500 : 150);
+        });
+
+        $(document).on('click', '.filterButton', function () {
+            var btn = this;
+            var $panel = $(btn).closest('#modernFilterPanel');
+            var $dropdown = $(btn).closest('.dropdown-content');
+            if (!$panel.length && !$dropdown.length) return;
+            var form = $(btn).closest('form')[0];
+            if (form && typeof form.checkValidity === 'function' && !form.checkValidity()) return;
+            setTimeout(function () {
+                if ($panel.length) {
+                    toggleModernFilterPanel(false);
+                } else {
+                    $dropdown.addClass('filter-force-closed');
+                    $dropdown.parent().one('mouseleave', function () {
+                        $dropdown.removeClass('filter-force-closed');
+                    });
+                    if (document.activeElement) document.activeElement.blur();
+                }
+            }, 0);
         });
 
         // "Find a filter" -- matches the typed text against each field's

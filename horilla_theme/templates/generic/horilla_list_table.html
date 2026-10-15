@@ -8,7 +8,7 @@
         margin-top: 0;
     }
 </style>
-<div id="{{ view_id|safe }}" class="hlv-container" data-list-path="{{request.path}}" data-selected-instances-key="{{selected_instances_key_id}}" data-total-count="{{queryset.paginator.count}}">
+<div id="{{ view_id|safe }}" class="hlv-container" data-list-path="{{request.path}}" data-selected-instances-key="{{selected_instances_key_id}}" data-model="{{model_label}}" data-total-count="{{queryset.paginator.count}}">
         <div
             class="oh-modal"
             id="bulkUpdateModal{{view_id|safe}}"
@@ -240,7 +240,7 @@
                                     {{row_attrs|format:instance|safe}}
                                 >
                                     {% if bulk_select_option %}
-                                    <td class="text-sm text-left px-1 py-1 text-[#666] rounded-lg h-[30px] {{row_status_class|format:instance|safe}}">
+                                    <td class="text-sm text-left px-1 py-1 text-[#666] rounded-lg h-[30px] {{row_status_class|format:instance|safe}}" prevent-dblclick="true" onclick="event.stopPropagation()">
                                         <div class="flex items-center justify-center">
                                             <input
                                                 type="checkbox"

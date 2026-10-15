@@ -5,6 +5,7 @@ horilla/cbv_methods.py
 import json
 import types
 import uuid
+from datetime import datetime, timedelta
 from io import BytesIO
 from typing import Any
 from urllib.parse import urlencode
@@ -412,6 +413,46 @@ def paginator_qry(qryset, page_number, records_per_page=50):
     return qryset
 
 
+def get_quick_date_filters(ranges, fields):
+    """Build (label, onclick attrs) pairs from (label, start_offset, end_offset) ranges and (exact, from, to) fields."""
+    exact_field, from_field, to_field = fields
+    today = datetime.now().date()
+
+    def setter(name, value):
+        return (
+            f"$('#applyFilter').closest('form').find('[name={name}]').val('{value}');"
+        )
+
+    filters = []
+    for label, start_offset, end_offset in ranges:
+        start = today + timedelta(days=start_offset)
+        end = None if end_offset is None else today + timedelta(days=end_offset)
+        steps = []
+        if end is None and exact_field:
+            steps += [setter(from_field, ""), setter(to_field, "")]
+            steps.append(setter(exact_field, start))
+        else:
+            if exact_field:
+                steps.append(setter(exact_field, ""))
+            steps.append(setter(from_field, start))
+            steps.append(setter(to_field, end or start))
+        steps.append("$('#applyFilter').click();")
+        filters.append((label, 'onclick="' + " ".join(steps) + '"'))
+    return filters
+
+
+SINGLE_VALUE_QUERY_PARAMS = {"page", "view_id", "filter_applied", "sortby"}
+
+
+def dedupe_single_value_params(query_dict):
+    """Copy of query_dict keeping only the last value of single-value params."""
+    cleaned = query_dict.copy()
+    for key in list(cleaned.keys()):
+        if key in SINGLE_VALUE_QUERY_PARAMS or key.startswith("dynamic_page"):
+            cleaned[key] = cleaned.getlist(key)[-1]
+    return cleaned
+
+
 def saved_filter_path_query(request):
     """
     SavedFilter rows are keyed by the request path that was active when they
@@ -539,7 +580,12 @@ def sortby(
         return result
 
     order = not reverse
-    current_page = query_dict.get(page)
+    page_params = [query_dict.get(page)] + [
+        f"{key}={query_dict.get(key)}"
+        for key in sorted(query_dict)
+        if key.startswith("dynamic_page")
+    ]
+    current_page = "|".join(filter(None, page_params)) or None
     if current_page or is_first_sort:
         order = not order
         if reverse_object.page == current_page and not is_first_sort:

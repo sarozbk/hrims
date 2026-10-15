@@ -84,17 +84,17 @@ class WorkAndShiftTabView(HorillaTabView):
         # first paint.
         context["tabs"] = [
             {
-                "title": _("Work type request"),
+                "title": _("Work Type Request"),
                 "url": f"{reverse('employee-worktype-tab-shell',kwargs={'pk': pk})}",
                 "badge": WorkTypeRequest.objects.filter(employee_id=pk).count(),
             },
             {
-                "title": _("Rotating work type"),
+                "title": _("Rotating Work Type"),
                 "url": f"{reverse('employee-rotating-work-tab-shell',kwargs={'pk': pk})}",
                 "badge": RotatingWorkTypeAssign.objects.filter(employee_id=pk).count(),
             },
             {
-                "title": _("Shift request"),
+                "title": _("Shift Request"),
                 "url": f"{reverse('shift-request-individual-tab-shell',kwargs={'pk': pk})}",
                 # Matches ShiftRequestIndividualTabView.get_queryset(), which
                 # replaces the base ShiftRequestList queryset entirely with a
@@ -122,6 +122,9 @@ class WorkTypeIndividualTabList(WorkRequestListView):
     """
     List view for work type tab
     """
+
+    show_saved_filters = False
+    row_status_indications = []
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -176,6 +179,9 @@ class ShiftRequestIndividualTabView(ShiftRequestList):
     """
     List view for shift request tab
     """
+
+    show_saved_filters = False
+    row_status_indications = []
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -237,6 +243,9 @@ class ShiftAllocationIndividualTabView(AllocatedShift):
     standalone Allocated Shift Requests list this view is based on.
     """
 
+    show_saved_filters = False
+    row_status_indications = []
+
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.view_id = "shift-allocation-individual-div"
@@ -291,6 +300,8 @@ class RotatingShiftAssignIndividualView(RotatingShiftListParent):
     """
     List view for Rotating shift request tab
     """
+
+    show_saved_filters = False
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -356,6 +367,8 @@ class RotatingWorkIndividualTab(GeneralParent):
     """
     List view for rotating work type tab
     """
+
+    show_saved_filters = False
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)

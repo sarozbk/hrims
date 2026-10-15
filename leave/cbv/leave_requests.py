@@ -2,9 +2,8 @@
 This page handles the cbv of leave requests page
 """
 
-import ast
 import contextlib
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 from django.contrib import messages
@@ -66,29 +65,6 @@ class LeaveRequestsListView(HorillaListView):
         super().__init__(**kwargs)
         self.search_url = reverse("request-filter")
         self.view_id = "leaveRequest"
-        if self.request.user.has_perm("leave.change_leaverequest"):
-            self.bulk_update_fields = ["status"]
-
-    def handle_bulk_submission(self, request):
-        instance_ids = request.POST.getlist("instance_ids")
-        if (
-            instance_ids
-            and isinstance(instance_ids[0], str)
-            and instance_ids[0].startswith("[")
-        ):
-            instance_ids = ast.literal_eval(instance_ids[0])
-        instance_ids = [int(i) for i in instance_ids if str(i).isdigit()]
-        filtered_ids = []
-        for request_id in instance_ids:
-            leave_request = LeaveRequest.objects.get(id=request_id)
-            if leave_request.employee_id.id != request.user.employee_get.id:
-                filtered_ids.append(request_id)
-        if request.user.is_superuser:
-            filtered_ids = instance_ids
-        formatted_ids = [str(filtered_ids)]
-        request.POST = request.POST.copy()
-        request.POST.setlist("instance_ids", formatted_ids)
-        return super().handle_bulk_submission(request)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -210,71 +186,8 @@ class LeaveRequestsListView(HorillaListView):
         "rejected-{status} cancelled-{status} requested-{status} approved-{status}"
     )
 
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-
-        # Subclasses (e.g. LeaveClashListView) set this to None to hide the
-        # status legend/date presets entirely.
-        if self.row_status_indications is None:
-            return context
-
-        today = date.today()
-        yesterday = today - timedelta(days=1)
-        tomorrow = today + timedelta(days=1)
-        this_week = today + timedelta(days=7)
-
-        # LeaveRequestFilter's from_date/to_date together match any leave
-        # request that overlaps the given range (see filter_from_date/
-        # to_date in leave/filters.py), so a single-day preset just sets
-        # both ends to the same date.
-        self.row_status_indications = self.row_status_indications + [
-            (
-                "",
-                _("Yesterday"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=from_date]').val('{yesterday}');
-                        $('#applyFilter').closest('form').find('[name=to_date]').val('{yesterday}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-            (
-                "",
-                _("Today"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=from_date]').val('{today}');
-                        $('#applyFilter').closest('form').find('[name=to_date]').val('{today}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-            (
-                "",
-                _("Tomorrow"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=from_date]').val('{tomorrow}');
-                        $('#applyFilter').closest('form').find('[name=to_date]').val('{tomorrow}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-            (
-                "",
-                _("This Week"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=from_date]').val('{today}');
-                        $('#applyFilter').closest('form').find('[name=to_date]').val('{this_week}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-        ]
-        context["row_status_indications"] = self.row_status_indications
-        return context
+    show_quick_date_filters = True
+    quick_date_fields = ("", "from_date", "to_date")
 
     # Mirrors LeaveRequestsNavView.nested_group_by_fields -- needed here
     # too since this (List) and Nav are separate classes; see the same
@@ -323,7 +236,27 @@ class LeaveRequestsNavView(HorillaNavView):
                     style="cursor: pointer;"
                 """,
             },
+            {
+                "action": _("Bulk Reject"),
+                "attrs": """
+                    onclick="bulkRejectLeaveRequests();"
+                    style="cursor: pointer;"
+                """,
+            },
         ]
+        if self.request.user.has_perm("leave.add_leaverequest"):
+            self.actions.insert(
+                0,
+                {
+                    "action": _("Import"),
+                    "attrs": """
+                        onclick="importLeaveRequest();"
+                        data-toggle="oh-modal-toggle"
+                        data-target="#leaveRequestImport"
+                        style="cursor: pointer;"
+                    """,
+                },
+            )
         if has_export_access(self.request, LeaveRequest):
             self.actions.append(
                 {
@@ -747,6 +680,7 @@ class LeaveClashListView(LeaveRequestsListView):
 
     row_status_class = ""
     row_status_indications = None
+    show_quick_date_filters = False
     bulk_select_option = None
     row_attrs = ""
 

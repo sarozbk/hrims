@@ -139,66 +139,12 @@ class AttendancesListView(HorillaListView):
         ("employee_id__employee_work_info__company_id", _("Company")),
     ]
 
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-
-        today = datetime.now().date()
-        yesterday = today - timedelta(days=1)
-        tomorrow = today + timedelta(days=1)
-        this_week = today + timedelta(days=7)
-
-        self.row_status_indications = (self.row_status_indications or []) + [
-            (
-                "",
-                _("Yesterday"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=attendance_date__gte]').val('');
-                        $('#applyFilter').closest('form').find('[name=attendance_date__lte]').val('');
-                        $('#applyFilter').closest('form').find('[name=attendance_date]').val('{yesterday}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-            (
-                "",
-                _("Today"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=attendance_date__gte]').val('');
-                        $('#applyFilter').closest('form').find('[name=attendance_date__lte]').val('');
-                        $('#applyFilter').closest('form').find('[name=attendance_date]').val('{today}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-            (
-                "",
-                _("Tomorrow"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=attendance_date__gte]').val('');
-                        $('#applyFilter').closest('form').find('[name=attendance_date__lte]').val('');
-                        $('#applyFilter').closest('form').find('[name=attendance_date]').val('{tomorrow}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-            (
-                "",
-                _("This Week"),
-                f"""
-                    onclick="
-                        $('#applyFilter').closest('form').find('[name=attendance_date]').val('');
-                        $('#applyFilter').closest('form').find('[name=attendance_date__gte]').val('{today}');
-                        $('#applyFilter').closest('form').find('[name=attendance_date__lte]').val('{this_week}');
-                        $('#applyFilter').click();
-                    "
-                """,
-            ),
-        ]
-        context["row_status_indications"] = self.row_status_indications
-        return context
+    show_quick_date_filters = True
+    quick_date_fields = (
+        "attendance_date",
+        "attendance_date__gte",
+        "attendance_date__lte",
+    )
 
     # def get_queryset(self, queryset=None, filtered=False, *args, **kwargs):
     #     """
@@ -569,6 +515,17 @@ class OTAttendancesList(AttendancesListView):
 
     selected_instances_key_id = "overtimeselectedInstances"
 
+    # Same columns as the other tabs, but the Overtime column (shown by
+    # default here) flags overtime below the minimum OT needed for approval.
+    columns = [
+        (_("Overtime"), "overtime_cell") if col[1] == "attendance_overtime" else col
+        for col in AttendancesListView.columns
+    ]
+    default_columns = [
+        *AttendancesListView.default_columns,
+        (_("Overtime"), "overtime_cell"),
+    ]
+
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.search_url = reverse("ot-attendance-tab")
@@ -831,6 +788,8 @@ class PenaltyAccountListView(HorillaListView):
     list view for penalty tab
     """
 
+    show_saved_filters = False
+
     filter_class = PenaltyFilter
     model = PenaltyAccounts
     columns = [
@@ -882,6 +841,9 @@ class ValidateAttendancesIndividualTabView(AttendancesListView):
     """
     list view for validate attendance tab view
     """
+
+    show_quick_date_filters = False
+    show_saved_filters = False
 
     def get_queryset(self):
         queryset = super().get_queryset()

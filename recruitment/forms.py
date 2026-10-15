@@ -1,24 +1,5 @@
 """
-forms.py
-
-This module contains the form classes used in the application.
-
-Each form represents a specific functionality or data input in the
-application. They are responsible for validating
-and processing user input data.
-
-Classes:
-- YourForm: Represents a form for handling specific data input.
-
-Usage:
-from django import forms
-
-class YourForm(forms.Form):
-    field_name = forms.CharField()
-
-    def clean_field_name(self):
-        # Custom validation logic goes here
-        pass
+Forms for the recruitment app.
 """
 
 import logging
@@ -335,6 +316,13 @@ class RecruitmentCreationForm(BaseModelForm):
         self.fields["publish_in_linkedin"].widget.attrs.update(
             {"onchange": "toggleLinkedIn()"}
         )
+        # Off when a new recruitment form opens (the model default is on):
+        # posting to LinkedIn is something to choose, not something that
+        # happens unless it is unticked. An existing recruitment keeps its own
+        # value, and so does a copy made from one (the copy's initial data
+        # wins over the field's initial).
+        if not self.instance.pk:
+            self.fields["publish_in_linkedin"].initial = False
 
     # def create_option(self, *args,**kwargs):
     #     option = super().create_option(*args,**kwargs)
@@ -397,10 +385,16 @@ class StageCreationForm(BaseModelForm):
             if ids:
                 self.errors.pop("stage_managers", None)
         if self.cleaned_data.get("recruitment_id") and self.cleaned_data.get("stage"):
-            if Stage.objects.filter(
+            # Another stage of the same recruitment with this name -- not the
+            # stage being edited, or editing a stage (e.g. its managers or type)
+            # without renaming it reported itself as a duplicate.
+            duplicates = Stage.objects.filter(
                 recruitment_id=self.cleaned_data.get("recruitment_id"),
                 stage=self.cleaned_data.get("stage"),
-            ).exists():
+            )
+            if self.instance.pk:
+                duplicates = duplicates.exclude(pk=self.instance.pk)
+            if duplicates.exists():
                 raise forms.ValidationError(
                     {"stage": _("This stage already exists for the recruitment.")}
                 )
@@ -522,11 +516,6 @@ class ApplicationForm(RegistrationForm):
     """
 
     load = forms.CharField(widget=widgets.RecruitmentAjaxWidget, required=False)
-    # This form serves public, unauthenticated visitors, so a company-scoped
-    # manager (tied to the session's "selected company") is wrong here --
-    # it would reject valid recruitments from any company other than
-    # whichever one happens to be scoped, exactly like the lookup in
-    # recruitment/views/surveys.py that also uses Recruitment.default.
     active_recruitment = Recruitment.default.filter(
         is_active=True, closed=False, is_published=True
     )
@@ -572,12 +561,6 @@ class ApplicationForm(RegistrationForm):
         self.fields["resume"].widget.attrs["accept"] = ".pdf"
         self.fields["resume"].required = False
 
-        # RegistrationForm.__init__ calls reload_queryset(), which re-scopes
-        # every ModelChoiceField to the request session's "selected company"
-        # -- meaningless for this public, unauthenticated form, and it drops
-        # the is_active/closed/is_published filters too. Re-apply the correct
-        # unscoped queryset here rather than in reload_queryset itself, since
-        # internal (staff) forms rely on that company-scoping for Recruitment.
         self.fields["recruitment_id"].queryset = self.active_recruitment
         self.fields["recruitment_id"].widget.attrs = {"data-widget": "ajax-widget"}
         self.fields["job_position_id"].widget.attrs = {"data-widget": "ajax-widget"}
@@ -674,8 +657,13 @@ class AddCandidateForm(ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         initial = kwargs["initial"].get("stage_id")
+        rec_id = kwargs["initial"].get("rec_id")
+        recruitment = None
         if initial:
             recruitment = Stage.objects.get(id=initial).recruitment_id
+        elif rec_id:
+            recruitment = Recruitment.objects.filter(id=rec_id).first()
+        if recruitment:
             self.instance.recruitment_id = recruitment
             self.fields["stage_id"].queryset = self.fields["stage_id"].queryset.filter(
                 recruitment_id=recruitment
@@ -689,7 +677,8 @@ class AddCandidateForm(ModelForm):
         self.fields["resume"].widget.attrs["accept"] = ".pdf"
         self.fields["gender"].empty_label = None
         self.fields["job_position_id"].empty_label = None
-        self.fields["stage_id"].empty_label = None
+        if initial:
+            self.fields["stage_id"].empty_label = None
 
     def as_p(self, *args, **kwargs):
         """
@@ -838,7 +827,7 @@ class QuestionForm(ModelForm):
             "sequence": _("Sequence"),
             "type": _("Type"),
             "options": _("Options"),
-            "is_mandatory": _("Is Mandatory"),
+            "is_mandatory": _("Mandatory"),
         }
 
     def as_p(self, *args, **kwargs):
@@ -1307,8 +1296,6 @@ class ScheduleInterviewForm(BaseModelForm):
             attrs={"type": "date", "class": "oh-input w-100"}
         )
         if self.instance.pk:
-            # Update mode: keep this permissive and normalize manually in clean()
-            # so unchanged browser values do not fail with "Enter a valid time".
             self.fields["interview_time"] = forms.CharField(
                 required=False,
                 widget=forms.TimeInput(

@@ -32,9 +32,10 @@ from notifications.signals import notify
 from payroll.cbv.allowance_deduction import AllowanceDeductionTabView
 from payroll.filters import PayslipFilter
 from payroll.forms import component_forms as forms
-from payroll.methods.methods import calculate_employer_contribution, save_payslip
+from payroll.methods.methods import payslip_fields, save_payslip
+from payroll.methods.payroll_run import payroll_calculation
+from payroll.methods.tax_calc import TaxComputationError
 from payroll.models.models import Contract, Payslip
-from payroll.views.component_views import payroll_calculation
 
 
 @method_decorator(login_required, name="dispatch")
@@ -70,9 +71,8 @@ class PayslipList(HorillaListView):
     quick_export = False
     bulk_update_fields = [
         "status",
-        "start_date",
-        "end_date",
     ]
+    bulk_update_required_fields = ["status"]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -220,9 +220,13 @@ class PayslipNav(HorillaNavView):
             #     hx-get="{reverse('payroll-create-form-view')}"
             #     hx-target="#genericModalBody"
             # """
-            self.create_attrs = """
-                data-toggle="oh-modal-toggle"
-                data-target="#bulkPayslipModal"
+            # Both of these used to open #bulkPayslipModal, which generated
+            # payslips straight from a name and two dates with nothing
+            # checked first. They go to the run wizard instead -- a run that
+            # is scoped, reviewed and recorded. The old modal's view is still
+            # reachable by URL; nothing in the UI points at it.
+            self.create_attrs = f"""
+                onclick="window.location.href='{reverse('payroll-batch-scope')}'"
                 style="cursor:pointer;"
             """
 
@@ -230,9 +234,15 @@ class PayslipNav(HorillaNavView):
                 [
                     {
                         "action": _("Generate"),
-                        "attrs": """
-                    data-toggle = "oh-modal-toggle"
-                    data-target = "#bulkPayslipModal"
+                        "attrs": f"""
+                    onclick="window.location.href='{reverse('payroll-batch-scope')}'"
+                    style="cursor: pointer;"
+                """,
+                    },
+                    {
+                        "action": _("Payroll runs"),
+                        "attrs": f"""
+                    onclick="window.location.href='{reverse('payroll-batch-home')}'"
                     style="cursor: pointer;"
                 """,
                     },
@@ -285,6 +295,9 @@ class PayslipNav(HorillaNavView):
             )
 
     nav_title = _("Payslip")
+    # The button opens the run wizard, so it says what it does.
+    create_label = _("Generate")
+    create_icon = "play-outline"
     filter_body_template = "cbv/payslip/payslip_filter.html"
     filter_instance = PayslipFilter()
     filter_form_context_name = "form"
@@ -330,6 +343,58 @@ class PayslipNav(HorillaNavView):
         ("employee_id__employee_work_info__job_role_id", _("Job Role")),
         ("employee_id__employee_work_info__company_id", _("Company")),
     ]
+
+
+@method_decorator(login_required, name="dispatch")
+class PayslipRunList(PayslipList):
+    """
+    The payslip list, scoped to one payroll run (the run's own page).
+
+    The run comes from the URL, not from a filter, so it cannot be cleared
+    away. Like every list, it leaves out employees who are no longer active.
+    """
+
+    columns = [col for col in PayslipList.columns if col[0] != _("Batch")]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.search_url = reverse(
+            "payslip-run-list",
+            kwargs={"batch_id": self.request.resolver_match.kwargs["batch_id"]},
+        )
+
+    def get_queryset(self, queryset=None, *args, **kwargs):
+        if self.queryset:
+            return self.queryset
+        base = self.model.objects.all().filter(
+            payroll_batch_id=self.request.resolver_match.kwargs["batch_id"]
+        )
+        if not self.request.user.has_perm("payroll.view_payslip"):
+            base = base.filter(employee_id__employee_user_id=self.request.user)
+        return HorillaListView.get_queryset(self, base, *args, **kwargs)
+
+
+@method_decorator(login_required, name="dispatch")
+class PayslipRunNav(PayslipNav):
+    """Search, filter and actions of the payslip list on a run's page."""
+
+    # The run's own page already carries the title; an empty one would fall
+    # back to the model name, so a non-breaking space holds the place.
+    nav_title = " "
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.search_url = reverse(
+            "payslip-run-list",
+            kwargs={"batch_id": self.request.resolver_match.kwargs["batch_id"]},
+        )
+        # Generating and the runs page are the page around this one.
+        self.create_attrs = None
+        self.actions = [
+            action
+            for action in self.actions
+            if action["action"] not in (_("Generate"), _("Payroll runs"))
+        ]
 
 
 @method_decorator(login_required, name="dispatch")
@@ -411,26 +476,21 @@ class PayrollCreateFormView(HorillaFormView):
             ).first()
             if start_date < contract.contract_start_date:
                 start_date = contract.contract_start_date
-            payslip_data = payroll_calculation(employee, start_date, end_date)
+            try:
+                payslip_data = payroll_calculation(employee, start_date, end_date)
+            except TaxComputationError as exc:
+                # Surface it on the form rather than saving a payslip whose tax
+                # silently computed to 0.
+                form.add_error(None, str(exc))
+                return self.form_invalid(form)
             payslip_data["payslip"] = payslip
-            data = {}
-            data["employee"] = employee
-            data["start_date"] = payslip_data["start_date"]
-            data["end_date"] = payslip_data["end_date"]
-            data["status"] = (
-                "draft"
-                if self.request.GET.get("status") is None
-                else self.request.GET["status"]
+            payslip_data["instance"] = save_payslip(
+                **payslip_fields(
+                    payslip_data,
+                    employee,
+                    status=self.request.GET.get("status") or "draft",
+                )
             )
-            data["contract_wage"] = payslip_data["contract_wage"]
-            data["basic_pay"] = payslip_data["basic_pay"]
-            data["gross_pay"] = payslip_data["gross_pay"]
-            data["deduction"] = payslip_data["total_deductions"]
-            data["net_pay"] = payslip_data["net_pay"]
-            data["pay_data"] = json.loads(payslip_data["json_data"])
-            calculate_employer_contribution(data)
-            data["installments"] = payslip_data["installments"]
-            payslip_data["instance"] = save_payslip(**data)
             form = forms.PayslipForm()
             messages.success(self.request, _("Payslip Saved"))
             payslip = payslip_data["instance"]
@@ -452,6 +512,9 @@ class PayrollTab(PayslipList):
     """
     class for rendering payroll tab in employee profile
     """
+
+    show_saved_filters = False
+    row_status_indications = []
 
     def get_queryset(self):
         queryset = super().get_queryset()
