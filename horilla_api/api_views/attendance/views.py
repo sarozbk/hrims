@@ -3,7 +3,6 @@ from datetime import date, datetime, timedelta, timezone
 
 from django import template
 from django.conf import settings
-from django.core.exceptions import ObjectDoesNotExist
 from django.core.mail import EmailMessage
 from django.db.models import Case, CharField, F, Value, When
 from django.http import QueryDict
@@ -90,10 +89,12 @@ def geofence_denial(request):
     if company is None:
         return None
 
-    try:
-        geo_fencing = company.geo_fencing
-    except ObjectDoesNotExist:
-        # No GeoFencing row for this company: the feature is not in use here.
+    # The company's own fence, else the global one.
+    from geofencing.models import GeoFencing
+
+    geo_fencing = GeoFencing.for_company(company)
+    if geo_fencing is None:
+        # No GeoFencing row at all: the feature is not in use here.
         return None
 
     if not geo_fencing.start:
@@ -930,7 +931,7 @@ class OfflineEmployeesListView(APIView):
                 When(
                     leaverequest__start_date__lte=today,
                     leaverequest__end_date__gte=today,
-                    leaverequest__status="approved",
+                    leaverequest__status__in=["approved", "cancel_requested"],
                     then=Value("On Leave"),
                 ),
                 When(

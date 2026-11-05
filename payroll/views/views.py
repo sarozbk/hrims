@@ -64,6 +64,7 @@ from payroll.models.models import (
     ReimbursementFile,
     ReimbursementrequestComment,
 )
+from payroll.models.payroll_batch import PayrollBatch
 from payroll.models.tax_models import PayrollSettings
 
 # Create your views here.
@@ -98,16 +99,16 @@ def contract_create(request):
                 )
                 return response
             return redirect("view-contract")
-    template_name = (
-        "payroll/common/form_fragment.html" if is_htmx else "payroll/common/form.html"
-    )
     return render(
         request,
-        template_name,
+        "payroll/common/form_modal.html" if is_htmx else "payroll/common/form.html",
         {
             "form": form,
             "post_url": request.get_full_path(),
             "back_url": reverse("contract-filter"),
+            "in_modal": is_htmx,
+            "form_target": "#relatedObjectModalBody",
+            "modal_title": _("Contract"),
         },
     )
 
@@ -147,29 +148,17 @@ def contract_update(request, contract_id, **kwargs):
                 )
                 return response
             return redirect(reverse("view-contract"))
-    # ?modal=1 asks for the same form in the app's standard modal chrome --
-    # header, close button, and a post that lands back in the modal instead of
-    # in #listContainer, which on another page belongs to something else
-    # entirely. Opt-in so the contracts page keeps its full-width card.
-    in_modal = bool(request.GET.get("modal"))
-    if in_modal:
-        template_name = "payroll/common/form_modal.html"
-    else:
-        template_name = (
-            "payroll/common/form_fragment.html"
-            if is_htmx
-            else "payroll/common/form.html"
-        )
+    in_modal = is_htmx or bool(request.GET.get("modal"))
     return render(
         request,
-        template_name,
+        "payroll/common/form_modal.html" if in_modal else "payroll/common/form.html",
         {
             "form": contract_form,
             "post_url": request.get_full_path(),
             "back_url": reverse("contract-filter"),
             "in_modal": in_modal,
-            "form_target": "#relatedObjectModalBody" if in_modal else "#listContainer",
-            "modal_title": _("Contract") if in_modal else "",
+            "form_target": "#relatedObjectModalBody",
+            "modal_title": _("Contract"),
         },
     )
 
@@ -308,7 +297,11 @@ def contract_delete(request, contract_id):
 
     """
     try:
-        Contract.objects.get(id=contract_id).delete()
+        contract = Contract.objects.get(id=contract_id)
+        if contract.contract_status != "draft":
+            messages.error(request, _("Only a draft contract can be deleted."))
+            return HorillaRedirect(request)
+        contract.delete()
         messages.success(request, _("Contract deleted"))
         request_path = request.path.split("/")
         if "delete-contract-modal" in request_path:
@@ -505,7 +498,9 @@ def update_payslip_status(request, payslip_id):
     payslip = Payslip.objects.filter(id=payslip_id).first()
     if not payslip:
         return HorillaRedirect(request, message=_("Payslip not found."))
-    if payslip:
+    if payslip and payslip.status_locked and status != payslip.status:
+        messages.error(request, payslip.status_lock_message)
+    elif payslip:
         payslip.status = status
         payslip.save()
         messages.success(request, _("Payslip status updated"))
@@ -538,11 +533,24 @@ def update_payslip_status_no_id(request):
         ids = json.loads(ids_json)
         status = request.POST["status"]
         slips = Payslip.objects.filter(id__in=ids)
+        # Payslips in an approved or paid batch are moved by the batch, not one by one.
+        locked = slips.filter(
+            payroll_batch__status__in=PayrollBatch.PAYSLIP_STATUS_LOCKED
+        )
+        skipped = locked.count()
+        slips = slips.exclude(pk__in=locked.values("pk"))
+        updated = slips.count()
         slips.update(status=status)
         message = {
             "type": "success",
-            "message": f"{slips.count()} Payslips status updated.",
+            "message": f"{updated} Payslips status updated.",
         }
+        if skipped:
+            message = {
+                "type": "warning" if updated else "error",
+                "message": f"{updated} Payslips status updated. {skipped} left as they are: "
+                "their batch is approved or paid.",
+            }
     return JsonResponse(message)
 
 
@@ -610,7 +618,7 @@ def view_payslip_pdf(request, payslip_id):
             data["json_data"]["employee"] = payslip.employee_id.id
             data["json_data"]["payslip"] = payslip.id
             data["instance"] = payslip
-            data["currency"] = PayrollSettings.objects.first().currency_symbol
+            data["currency"] = PayrollSettings.currency_for_selected_company()
             data["all_deductions"] = []
             for deduction_list in [
                 data["basic_pay_deductions"],
@@ -654,6 +662,7 @@ def view_created_payslip(request, payslip_id, **kwargs):
         data["json_data"]["payslip"] = payslip.id
         data["instance"] = payslip
         data["total_calendar_days"] = get_total_calendar_days(data)
+        data["company"] = Company.objects.filter(hq=True).first()
         return render(request, "payroll/payslip/individual_payslip.html", data)
     return render(request, "404.html")
 
@@ -669,8 +678,12 @@ def delete_payslip(request, payslip_id):
     from .component_views import filter_payslip
 
     try:
-        Payslip.objects.get(id=payslip_id).delete()
-        messages.success(request, _("Payslip deleted"))
+        payslip = Payslip.objects.get(id=payslip_id)
+        if payslip.status == "paid":
+            messages.error(request, _("A paid payslip cannot be deleted."))
+        else:
+            payslip.delete()
+            messages.success(request, _("Payslip deleted"))
     except Payslip.DoesNotExist:
         messages.error(request, _("Payslip not found."))
     except ProtectedError:
@@ -1357,6 +1370,14 @@ def payslip_bulk_delete(request):
     for id in ids:
         try:
             payslip = Payslip.objects.get(id=id)
+            if payslip.status == "paid":
+                messages.error(
+                    request,
+                    _("{payslip} is paid and cannot be deleted.").format(
+                        payslip=payslip
+                    ),
+                )
+                continue
             period = f"{payslip.start_date} to {payslip.end_date}"
             payslip.delete()
             messages.success(
@@ -1434,13 +1455,21 @@ def contract_bulk_delete(request):
     for id in ids:
         try:
             contract = Contract.objects.get(id=id)
+            if contract.contract_status != "draft":
+                messages.error(
+                    request,
+                    _("{contract} is not a draft and cannot be deleted.").format(
+                        contract=contract
+                    ),
+                )
+                continue
             name = f"{contract.contract_name}"
             contract.delete()
             messages.success(
                 request,
                 _("{name} deleted.").format(name=name),
             )
-        except Payslip.DoesNotExist:
+        except Contract.DoesNotExist:
             messages.error(request, _("Contract not found."))
         except ProtectedError:
             messages.error(
@@ -1542,6 +1571,11 @@ def generate_payslip_pdf(template_path, context, html=False):
         # Return an HttpResponse containing the PDF content
         response = HttpResponse(pdf, content_type="application/pdf")
         response["Content-Disposition"] = "inline; filename=payslip.pdf"
+        # Every payslip is served from the same URL shape (no per-render
+        # query string/ETag), so without this the browser can reuse a
+        # previously cached PDF -- stale company/logo info included -- for
+        # what looks like a fresh request.
+        response["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return response
     except Exception as e:
         # Handle errors gracefully
@@ -1616,7 +1650,7 @@ def payslip_pdf(request, id):
                     "employee": payslip.employee_id,
                     "payslip": payslip,
                     "json_data": data.copy(),
-                    "currency": PayrollSettings.objects.first().currency_symbol,
+                    "currency": PayrollSettings.currency_for_selected_company(),
                     "all_deductions": [],
                     "all_allowances": data["allowances"].copy(),
                     "host": request.get_host(),

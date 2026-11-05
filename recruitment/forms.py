@@ -16,7 +16,7 @@ from django.utils.translation import gettext_lazy as _
 
 from base.forms import Form
 from base.forms import ModelForm as BaseModelForm
-from base.methods import reload_queryset
+from base.methods import export_field_label, reload_queryset
 from base.widgets import CustomTextInputWidget
 from employee.filters import EmployeeFilter
 from employee.models import Employee
@@ -357,10 +357,9 @@ class StageCreationForm(BaseModelForm):
         """
 
         model = Stage
-        fields = "__all__"
-        exclude = ["sequence", "is_active"]
+        fields = ["recruitment_id", "stage", "stage_managers", "stage_type"]
         labels = {
-            "stage": _("Stage"),
+            "stage": _("Title"),
         }
 
     def __init__(self, *args, **kwargs):
@@ -463,7 +462,7 @@ class CandidateCreationForm(BaseModelForm):
         candidate.hired = False
         candidate.start_onboard = False
         if stage is not None:
-            if stage.stage_type == "hired" and candidate.canceled is False:
+            if stage.stage_type == "shortlisted" and candidate.canceled is False:
                 candidate.hired = True
                 candidate.start_onboard = True
         candidate.recruitment_id = recruitment
@@ -553,7 +552,7 @@ class ApplicationForm(RegistrationForm):
             ),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, shortlisted=False, **kwargs):
         super().__init__(*args, **kwargs)
         request = getattr(_thread_locals, "request", None)
         self.fields["profile"].widget.attrs["accept"] = ".jpg, .jpeg, .png"
@@ -564,7 +563,16 @@ class ApplicationForm(RegistrationForm):
         self.fields["recruitment_id"].queryset = self.active_recruitment
         self.fields["recruitment_id"].widget.attrs = {"data-widget": "ajax-widget"}
         self.fields["job_position_id"].widget.attrs = {"data-widget": "ajax-widget"}
-        self.fields["referral_source"].required = True
+        self.fields["mobile"].required = True
+        self.fields["referral_source"].required = not shortlisted
+        if shortlisted:
+            self.fields["gender"].required = False
+        else:
+            self.fields["referral_source"].choices = [
+                choice
+                for choice in self.fields["referral_source"].choices
+                if choice[0] != "resume_shortlisting"
+            ]
         if request and request.user.has_perm("recruitment.add_candidate"):
             self.fields["profile"].required = False
 
@@ -805,11 +813,6 @@ class QuestionForm(ModelForm):
 
     verbose_name = "Survey Questions"
 
-    recruitment = forms.ModelMultipleChoiceField(
-        queryset=Recruitment.objects.filter(is_active=True),
-        required=False,
-        label=_("Recruitment"),
-    )
     options = forms.CharField(
         widget=forms.TextInput, label=_("Options"), required=False
     )
@@ -821,13 +824,18 @@ class QuestionForm(ModelForm):
 
         model = RecruitmentSurvey
         fields = "__all__"
-        exclude = ["recruitment_ids", "job_position_ids", "is_active", "options"]
+        exclude = [
+            "template_id",
+            "job_position_ids",
+            "is_active",
+            "options",
+            "sequence",
+        ]
         labels = {
             "question": _("Question"),
-            "sequence": _("Sequence"),
             "type": _("Type"),
             "options": _("Options"),
-            "is_mandatory": _("Mandatory"),
+            "is_mandatory": _("Required"),
         }
 
     def as_p(self, *args, **kwargs):
@@ -842,12 +850,8 @@ class QuestionForm(ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
-        recruitment = self.cleaned_data.get("recruitment")
         question_type = self.cleaned_data.get("type")
         options = self.cleaned_data.get("options")
-        self.recruitment = (
-            recruitment if recruitment is not None else Recruitment.objects.none()
-        )
         if question_type in ["options", "multiple"] and (
             options is None or options == ""
         ):
@@ -912,11 +916,6 @@ class QuestionForm(ModelForm):
                     self.option_count += 1
                     create_options_field_more(f"options{i}", option)
 
-        if instance:
-            self.fields["recruitment"].initial = instance.recruitment_ids.all()
-        self.fields["type"].widget.attrs.update(
-            {"class": " w-100", "style": "border:solid 1px #6c757d52;height:50px;"}
-        )
         for key, value in self.data.items():
             if key.startswith("options"):
                 self.option_count += 1
@@ -925,10 +924,7 @@ class QuestionForm(ModelForm):
         pinned_order = [
             "question",
             "type",
-            "sequence",
             "is_mandatory",
-            "template_id",
-            "recruitment",
         ]
         fields_order = pinned_order + [
             field for field in self.fields.keys() if field not in pinned_order
@@ -943,11 +939,9 @@ class SurveyForm(forms.Form):
 
     def __init__(self, recruitment, *args, **kwargs) -> None:
         super().__init__(recruitment, *args, **kwargs)
-        questions = recruitment.recruitmentsurvey_set.all()
-        all_questions = RecruitmentSurvey.objects.none() | questions
-        for template in recruitment.survey_templates.all():
-            questions = template.recruitmentsurvey_set.all()
-            all_questions = all_questions | questions
+        all_questions = RecruitmentSurvey.objects.filter(
+            template_id__in=recruitment.survey_templates.all()
+        )
         context = {"form": self, "questions": all_questions.distinct()}
         form = render_to_string("survey_form.html", context)
         self.form = form
@@ -961,11 +955,11 @@ class SurveyPreviewForm(forms.Form):
     SurveyTemplateForm
     """
 
-    def __init__(self, template, *args, **kwargs) -> None:
+    def __init__(self, template, request=None, *args, **kwargs) -> None:
         super().__init__(template, *args, **kwargs)
         all_questions = RecruitmentSurvey.objects.filter(template_id__in=[template])
         context = {"form": self, "questions": all_questions.distinct()}
-        form = render_to_string("survey_preview_form.html", context)
+        form = render_to_string("survey_preview_form.html", context, request=request)
         self.form = form
         return
         # for question in questions:
@@ -977,14 +971,32 @@ class TemplateForm(BaseModelForm):
     TemplateForm
     """
 
-    cols = {"title": 12, "description": 12, "company_id": 12}
+    cols = {"title": 12, "description": 12, "company_id": 12, "questions": 12}
 
     verbose_name = "Template"
+    field_order = ["title", "questions", "description", "company_id"]
+
+    questions = forms.ModelMultipleChoiceField(
+        queryset=RecruitmentSurvey.objects.all(),
+        required=False,
+        label=_("Questions"),
+    )
 
     class Meta:
         model = SurveyTemplate
         fields = "__all__"
         exclude = ["is_active"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields["questions"].initial = self.instance.questions.all()
+
+    def save(self, commit=True):
+        instance = super().save(commit=commit)
+        if commit:
+            instance.questions.set(self.cleaned_data["questions"])
+        return instance
 
     def as_p(self, *args, **kwargs):
         """
@@ -1043,7 +1055,7 @@ exclude_fields = [
 class CandidateExportForm(forms.Form):
     model_fields = Candidate._meta.get_fields()
     field_choices = [
-        (field.name, field.verbose_name.capitalize())
+        (field.name, export_field_label(field.verbose_name.capitalize()))
         for field in model_fields
         if hasattr(field, "verbose_name") and field.name not in exclude_fields
     ]
@@ -1140,6 +1152,8 @@ class SkillZoneCandidateForm(ModelForm):
                 queryset=Candidate.objects.all(),
                 widget=forms.Select(attrs={"class": "oh-select oh-select2 w-100"}),
                 label=_("Candidate"),
+                initial=self.instance.candidate_id_id,
+                empty_label=None,
             )
 
     def save(self, commit: bool = True) -> SkillZoneCandidate:
@@ -1370,7 +1384,7 @@ class ScheduleInterviewForm(BaseModelForm):
             LeaveRequest = apps.get_model("leave", "LeaveRequest")
 
             leave_employees = LeaveRequest.objects.filter(
-                employee_id__in=managers, status="approved"
+                employee_id__in=managers, status__in=["approved", "cancel_requested"]
             )
         else:
             leave_employees = []
@@ -1427,6 +1441,10 @@ class CandidateDocumentRequestForm(ModelForm):
         model = CandidateDocumentRequest
         fields = "__all__"
         exclude = ["is_active"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["candidate_id"].label = _("Candidates")
 
 
 class CandidateDocumentUpdateForm(ModelForm):

@@ -22,6 +22,7 @@ from django.db.models import ProtectedError, Q
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.encoding import force_str
 from django.utils.html import format_html
 from django.utils.translation import gettext as __
@@ -37,6 +38,7 @@ from base.methods import (
     check_manager,
     choosesubordinates,
     closest_numbers,
+    employees_in_scope,
     eval_validate,
     export_data,
     filtersubordinates,
@@ -71,9 +73,13 @@ from leave.methods import (
     attendance_days,
     calculate_requested_days,
     company_leave_dates_list,
+    decide_leave_cancellation,
     filter_conditional_leave_request,
     holiday_dates_list,
     parse_excel_date,
+    request_leave_cancellation,
+    reset_available_leave,
+    run_missed_resets,
 )
 from leave.models import *
 from leave.models import leave_requested_dates
@@ -116,33 +122,80 @@ def generate_error_report(error_list, error_data, file_name):
     return path_info
 
 
+def _leave_type_modal_response(
+    request, form, template="leave/leave_type/leave_type_modal_form.html"
+):
+    """
+    Render the two-step leave type form for the create / update modals.
+    """
+    context = {"form": form, "post_url": request.get_full_path()}
+    return render(request, template, context)
+
+
+def _leave_type_saved_response():
+    """
+    Close the modal, show the message and reload the leave type list.
+    """
+    from horilla_views.generic.cbv.views import HorillaFormView
+
+    response = HorillaFormView.HttpResponse()
+    response["HX-Trigger"] = json.dumps({"reloadLeaveTypeList": {"target": "body"}})
+    return response
+
+
 @login_required
 @permission_required("leave.add_leavetype")
 def leave_type_creation(request):
     """
-    function used to create leave type.
+    function used to create leave type (opens in a modal).
 
     Parameters:
     request (HttpRequest): The HTTP request object.
 
     Returns:
-    GET : return leave type creation template
-    POST : return leave view
+    GET : return the leave type modal form
+    POST : save and close the modal, or re-render the form with errors
     """
-    is_htmx = request.headers.get("HX-Request") is not None
+    if request.headers.get("HX-Request") is None:
+        return redirect("type-view")
     form = LeaveTypeForm()
     if request.method == "POST":
         form = LeaveTypeForm(request.POST, request.FILES)
         if form.is_valid():
-            leave_type = form.save()
+            form.save()
             messages.success(request, _("New leave type Created.."))
-            update_url = reverse("type-update", kwargs={"id": leave_type.id})
-            if is_htmx:
-                response = HttpResponse("", status=200)
-                response["HX-Redirect"] = update_url
-                return response
-            return redirect(update_url)
-    return render(request, "leave/leave_type/leave_type_creation.html", {"form": form})
+            return _leave_type_saved_response()
+    return _leave_type_modal_response(request, form)
+
+
+# ---- Previous (full page) workflow, replaced by the modal above ----
+# @login_required
+# @permission_required("leave.add_leavetype")
+# def leave_type_creation(request):
+#     """
+#     function used to create leave type.
+#
+#     Parameters:
+#     request (HttpRequest): The HTTP request object.
+#
+#     Returns:
+#     GET : return leave type creation template
+#     POST : return leave view
+#     """
+#     is_htmx = request.headers.get("HX-Request") is not None
+#     form = LeaveTypeForm()
+#     if request.method == "POST":
+#         form = LeaveTypeForm(request.POST, request.FILES)
+#         if form.is_valid():
+#             leave_type = form.save()
+#             messages.success(request, _("New leave type Created.."))
+#             update_url = reverse("type-update", kwargs={"id": leave_type.id})
+#             if is_htmx:
+#                 response = HttpResponse("", status=200)
+#                 response["HX-Redirect"] = update_url
+#                 return response
+#             return redirect(update_url)
+#     return render(request, "leave/leave_type/leave_type_creation.html", {"form": form})
 
 
 def paginator_qry(qryset, page_number):
@@ -257,48 +310,81 @@ def leave_type_filter(request):
 @permission_required("leave.change_leavetype")
 def leave_type_update(request, id, **kwargs):
     """
-    function used to update leave type.
+    function used to update leave type (opens in a modal).
 
     request (HttpRequest): The HTTP request object.
     id : leave type id
 
     Returns:
-    GET : return leave type update template
-    POST : return leave type view
+    GET : return the leave type modal form
+    POST : save and close the modal, or re-render the form with errors
     """
     try:
         leave_type = LeaveType.objects.get(id=id)
     except (LeaveType.DoesNotExist, OverflowError, ValueError):
         messages.error(request, _("Leave type not found"))
         return redirect("type-view")
-    is_htmx = request.headers.get("HX-Request") is not None
-    form = UpdateLeaveTypeForm(instance=leave_type)
-    compensatory = request.GET.get("compensatory")
-    redirect_url = reverse("type-view")
-    if compensatory:
-        redirect_url = compensatory_leave_settings_view
+    if request.headers.get("HX-Request") is None:
+        if request.GET.get("compensatory"):
+            return redirect(compensatory_leave_settings_view)
+        return redirect("type-view")
+    form = LeaveTypeForm(instance=leave_type)
     if request.method == "POST":
-        form_data = UpdateLeaveTypeForm(
-            request.POST, request.FILES, instance=leave_type
-        )
-        if form_data.is_valid():
-            form_data.save()
+        form = LeaveTypeForm(request.POST, request.FILES, instance=leave_type)
+        if form.is_valid():
+            form.save()
             messages.success(request, _("Leave type is updated successfully.."))
-            if is_htmx:
-                response = HttpResponse("", status=200)
-                response["HX-Trigger"] = json.dumps(
-                    {"reloadLeaveTypeList": {"target": "body"}}
-                )
-                return response
-            return redirect(redirect_url)
-        form = form_data
-    context = {
-        "form": form,
-        "title": _("Update Leave Type"),
-        "post_url": request.get_full_path(),
-        "is_htmx": is_htmx,
-    }
-    return render(request, "leave/leave_type/leave_type_update_page.html", context)
+            return _leave_type_saved_response()
+    return _leave_type_modal_response(request, form)
+
+
+# ---- Previous (full page) workflow, replaced by the modal above ----
+# @login_required
+# @permission_required("leave.change_leavetype")
+# def leave_type_update(request, id, **kwargs):
+#     """
+#     function used to update leave type.
+#
+#     request (HttpRequest): The HTTP request object.
+#     id : leave type id
+#
+#     Returns:
+#     GET : return leave type update template
+#     POST : return leave type view
+#     """
+#     try:
+#         leave_type = LeaveType.objects.get(id=id)
+#     except (LeaveType.DoesNotExist, OverflowError, ValueError):
+#         messages.error(request, _("Leave type not found"))
+#         return redirect("type-view")
+#     is_htmx = request.headers.get("HX-Request") is not None
+#     form = UpdateLeaveTypeForm(instance=leave_type)
+#     compensatory = request.GET.get("compensatory")
+#     redirect_url = reverse("type-view")
+#     if compensatory:
+#         redirect_url = compensatory_leave_settings_view
+#     if request.method == "POST":
+#         form_data = UpdateLeaveTypeForm(
+#             request.POST, request.FILES, instance=leave_type
+#         )
+#         if form_data.is_valid():
+#             form_data.save()
+#             messages.success(request, _("Leave type is updated successfully.."))
+#             if is_htmx:
+#                 response = HttpResponse("", status=200)
+#                 response["HX-Trigger"] = json.dumps(
+#                     {"reloadLeaveTypeList": {"target": "body"}}
+#                 )
+#                 return response
+#             return redirect(redirect_url)
+#         form = form_data
+#     context = {
+#         "form": form,
+#         "title": _("Update Leave Type"),
+#         "post_url": request.get_full_path(),
+#         "is_htmx": is_htmx,
+#     }
+#     return render(request, "leave/leave_type/leave_type_update_page.html", context)
 
 
 @login_required
@@ -718,9 +804,9 @@ def create_leave_report(request):
     else:
         company = Company.objects.filter(id=company_id).first()
 
-    leave_requests = LeaveRequest.objects.filter(status="approved").select_related(
-        "employee_id", "leave_type_id"
-    )
+    leave_requests = LeaveRequest.objects.filter(
+        status__in=["approved", "cancel_requested"]
+    ).select_related("employee_id", "leave_type_id")
     used_days_map = defaultdict(float)
     leave_request_map = defaultdict(list)
 
@@ -983,6 +1069,20 @@ def _may_act_on_leave_request(request, leave_request, perm, owner_allowed=False)
     return bool(conditional) and employee in conditional["managers"]
 
 
+def _comment_on(model, comment_id, request_id):
+    """
+    The comment, but only if it belongs to the request named in the URL.
+
+    The file-upload branch took a comment id from the query string and attached
+    files to whichever comment that was, so access to one request's comments
+    was enough to add files to another's. A missing or non-numeric id is
+    refused here too, instead of raising.
+    """
+    if not str(comment_id or "").isdigit():
+        return None
+    return model.objects.filter(id=comment_id, request_id=request_id).first()
+
+
 def _leave_decision_denied(request):
     """Denial in the shape the approve/reject callers read: the leave list
     and the calendar take the outcome from HX-Trigger's horillaMessage."""
@@ -1062,6 +1162,13 @@ def leave_request_approve(request, id, emp_id=None):
         request, leave_request, "leave.change_leaverequest"
     ):
         return _leave_decision_denied(request)
+    if leave_request.status == "cancel_requested":
+        # Re-approving would deduct the days a second time.
+        return _cancellation_response(
+            request,
+            "error",
+            _("Decide on the pending cancellation request instead."),
+        )
     employee_id = leave_request.employee_id
     if not request.user.is_superuser:
         if employee_id == request.user.employee_get:
@@ -1275,7 +1382,7 @@ def _reject_leave_request(request, leave_request, reason):
     comment, notify and mail the employee. Returns False when it was already
     rejected. Shared by the single and the bulk reject views.
     """
-    if leave_request.status == "rejected":
+    if leave_request.status in ["rejected", "cancel_requested"]:
         return False
     employee_id = leave_request.employee_id
     leave_type_id = leave_request.leave_type_id
@@ -1382,6 +1489,12 @@ def leave_request_cancel(request, id, emp_id=None):
         request, leave_request, "leave.change_leaverequest"
     ):
         return _leave_decision_denied(request)
+    if leave_request.status == "cancel_requested":
+        return _cancellation_response(
+            request,
+            "error",
+            _("Decide on the pending cancellation request instead."),
+        )
     form = RejectForm()
     if request.method == "POST":
         form = RejectForm(request.POST)
@@ -1419,51 +1532,200 @@ def leave_request_cancel(request, id, emp_id=None):
 @hx_request_required
 def user_leave_cancel(request, id):
     """
-    function used to cancel approved leave request by employee.
+    function used by an employee to request cancellation of an approved leave.
+
+    The leave is not cancelled here: it moves from "approved" to
+    "cancel_requested" and stays in force until a manager approves the
+    cancellation (leave_cancellation_approve) or rejects it
+    (leave_cancellation_reject).
 
     Parameters:
     request (HttpRequest): The HTTP request object.
     id : leave request id
 
     Returns:
-    GET :  it returns to the default my leave request view template.
-
+    GET : the cancellation reason form.
+    POST : redirects to the default my leave request view template.
     """
     leave_request = LeaveRequest.objects.filter(id=id).first()
     if not leave_request:
         return HttpResponse()
     employee_id = leave_request.employee_id
-    if employee_id.employee_user_id.id == request.user.id:
-        current_date = date.today()
-        if (
-            leave_request.status == "approved"
-            and leave_request.end_date >= current_date
-        ):
-            form = RejectForm()
-            if request.method == "POST":
-                form = RejectForm(request.POST)
-                if form.is_valid():
-                    leave_request.reject_reason = form.cleaned_data["reason"]
-                    leave_request.status = "cancelled"
-                    leave_request.save()
-                    messages.success(
-                        request, _("Leave request cancelled successfully..")
-                    )
-
-                    mail_thread = LeaveMailSendThread(
-                        request, leave_request, type="cancel"
-                    )
-                    mail_thread.start()
-                    return HorillaRedirect(request)
-            return render(
-                request,
-                "leave/leave_request/user_cancel_form.html",
-                {"form": form, "id": id},
-            )
-        messages.error(request, _("You can't cancel this leave request."))
+    if not (
+        request.user.is_superuser or employee_id.employee_user_id_id == request.user.id
+    ):
+        messages.error(request, _("You don't have the permission."))
         return HorillaRedirect(request)
-    messages.error(request, _("You don't have the permission."))
+    if (
+        leave_request.status != "approved"
+        or leave_request.end_date < date.today()
+        or leave_request.cancellation_requested
+    ):
+        if leave_request.status == "cancel_requested":
+            messages.error(
+                request, _("A cancellation request is already pending for this leave.")
+            )
+        elif leave_request.cancellation_requested:
+            messages.error(
+                request,
+                _("A cancellation has already been requested for this leave."),
+            )
+        else:
+            messages.error(request, _("You can't cancel this leave request."))
+        return HorillaRedirect(request)
+    form = RejectForm(request.POST or None)
+    form.fields["reason"].widget.attrs["placeholder"] = _("Reason for Cancellation")
+    if request.method == "POST":
+        if form.is_valid():
+            leave_request, error = request_leave_cancellation(
+                id, form.cleaned_data["reason"], request.user.employee_get
+            )
+            if error:
+                messages.error(request, error)
+                return HorillaRedirect(request)
+            messages.success(request, _("Leave cancellation requested successfully.."))
+            approver = employee_id.get_reporting_manager()
+            with contextlib.suppress(Exception):
+                notify.send(
+                    request.user.employee_get,
+                    recipient=approver.employee_user_id,
+                    verb=gettext_noop(
+                        "%(employee)s has requested to cancel an approved leave."
+                    ),
+                    verb_params={"employee": str(employee_id)},
+                    icon="people-circle",
+                    redirect=reverse("request-view") + f"?id={leave_request.id}",
+                )
+            mail_thread = LeaveMailSendThread(request, leave_request, type="cancel")
+            mail_thread.start()
+            return HorillaRedirect(request)
+    return render(
+        request,
+        "leave/leave_request/user_cancel_form.html",
+        {"form": form, "id": id},
+    )
+
+
+def _cancellation_response(request, level, text):
+    """Reload the leave lists and flash the outcome, as the approve view does."""
+    if level == "success":
+        messages.success(request, text)
+    else:
+        messages.error(request, text)
+    if request.headers.get("HX-Request"):
+        response = HttpResponse("", status=200)
+        response["HX-Trigger"] = json.dumps(
+            {
+                "reloadLeaveRequestList": {"target": "body"},
+                "horillaMessage": {"level": level, "text": str(text)},
+            }
+        )
+        return response
     return HorillaRedirect(request)
+
+
+def _cancellation_decision_denied(request, leave_request):
+    """The response refusing this user a cancellation decision, or None."""
+    if leave_request is None:
+        return _cancellation_response(
+            request, "error", _("No leave request found matching the query.")
+        )
+    if not _may_act_on_leave_request(
+        request, leave_request, "leave.change_leaverequest"
+    ):
+        return _leave_decision_denied(request)
+    if (
+        not request.user.is_superuser
+        and leave_request.employee_id == request.user.employee_get
+    ):
+        return _cancellation_response(
+            request,
+            "error",
+            _("You cannot decide on the cancellation of your own leave request."),
+        )
+    return None
+
+
+def _decide_cancellation(request, id, approve, reason=""):
+    """
+    Shared body of the cancellation approve/reject views: permission and
+    transition checks, then the decision under a row lock.
+    """
+    leave_request = LeaveRequest.objects.filter(id=id).first()
+    denied = _cancellation_decision_denied(request, leave_request)
+    if denied:
+        return denied
+    leave_request, error = decide_leave_cancellation(
+        id, approve, request.user.employee_get, reason
+    )
+    if error:
+        return _cancellation_response(request, "error", error)
+    employee_id = leave_request.employee_id
+
+    with contextlib.suppress(Exception):
+        notify.send(
+            request.user.employee_get,
+            recipient=employee_id.employee_user_id,
+            verb=(
+                gettext_noop("Your leave cancellation request has been approved.")
+                if approve
+                else gettext_noop("Your leave cancellation request has been rejected.")
+            ),
+            icon="people-circle",
+            redirect=reverse("user-request-view") + f"?id={leave_request.id}",
+        )
+    mail_thread = LeaveMailSendThread(
+        request, leave_request, type="cancel_approve" if approve else "cancel_reject"
+    )
+    mail_thread.start()
+    return _cancellation_response(
+        request,
+        "success",
+        (
+            _("Leave cancellation approved successfully..")
+            if approve
+            else _("Leave cancellation rejected successfully..")
+        ),
+    )
+
+
+@login_required
+@hx_request_required
+@manager_can_enter("leave.change_leaverequest")
+@require_http_methods(["POST"])
+def leave_cancellation_approve(request, id):
+    """Approve a pending cancellation: the leave becomes cancelled, days are given back."""
+    return _decide_cancellation(request, id, approve=True)
+
+
+@login_required
+@hx_request_required
+@manager_can_enter("leave.change_leaverequest")
+@require_http_methods(["GET", "POST"])
+def leave_cancellation_reject(request, id):
+    """
+    Reject a pending cancellation: the leave goes back to approved.
+
+    GET : the rejection reason form.
+    POST : record the reason and reject the cancellation.
+    """
+    form = RejectForm(request.POST or None)
+    # The modal title carries the visible label; this keeps an accessible name on the textarea.
+    form.fields["reason"].widget.attrs["aria-label"] = form.fields["reason"].label
+    if request.method == "POST" and form.is_valid():
+        return _decide_cancellation(
+            request, id, approve=False, reason=form.cleaned_data["reason"]
+        )
+    denied = _cancellation_decision_denied(
+        request, LeaveRequest.objects.filter(id=id).first()
+    )
+    if denied:
+        return denied
+    return render(
+        request,
+        "leave/leave_request/cancellation_reject_form.html",
+        {"form": form, "id": id},
+    )
 
 
 @login_required
@@ -1538,6 +1800,8 @@ def leave_assign_one(request, obj_id):
             )
 
         employee_ids = list(map(int, request.POST.getlist("employee_id")))
+        if not employees_in_scope(request, employee_ids, "leave.add_availableleave"):
+            return handle_no_permission(request)
 
         existing_leaves_set = set(
             AvailableLeave.objects.filter(
@@ -1545,11 +1809,6 @@ def leave_assign_one(request, obj_id):
             ).values_list("employee_id", flat=True)
         )
 
-        expiry_date = (
-            leave_type.carryforward_expire_date
-            if leave_type.carryforward_expire_date
-            else None
-        )
         new_employee_ids = list(set(employee_ids) - existing_leaves_set)
         new_employees_qs = Employee.objects.filter(id__in=new_employee_ids)
 
@@ -1586,10 +1845,7 @@ def leave_assign_one(request, obj_id):
                             assigned_date=leave.assigned_date, available_leave=leave
                         )
 
-                if leave_type.carryforward_type == "carryforward expire":
-                    if not expiry_date:
-                        expiry_date = leave.assigned_date
-                    leave.expired_date = expiry_date
+                leave.expired_date = leave_type.initial_expiry_date(leave.assigned_date)
 
                 leave.total_leave_days = max(
                     leave.available_days + leave.carryforward_days, 0
@@ -1787,6 +2043,10 @@ def leave_assign(request):
     if request.method == "POST":
         leave_type_ids = request.POST.getlist("leave_type_id")
         employee_ids = request.POST.getlist("employee_id")
+        # manager_can_enter admits any manager of anybody; the employees named
+        # here must be the caller's own reports unless they hold the permission.
+        if not employees_in_scope(request, employee_ids, "leave.add_availableleave"):
+            return handle_no_permission(request)
 
         if leave_type_ids and employee_ids:
             leave_types = LeaveType.objects.filter(id__in=leave_type_ids)
@@ -2087,9 +2347,13 @@ def assign_leave_type_import(request):
             else:
                 assign_leave_dicts = data_frame.dropna(how="all").to_dict("records")
 
+        # Only employees the user may assign leave to; anyone else reads as
+        # "does not exist" rather than confirming the badge is real.
         employees = {
             emp.badge_id.strip().lower(): emp
-            for emp in Employee.objects.all()
+            for emp in filtersubordinatesemployeemodel(
+                request, Employee.objects.all(), "leave.add_availableleave"
+            )
             if emp.badge_id
         }
         leave_types = {lt.name.strip().lower(): lt for lt in LeaveType.objects.all()}
@@ -2173,7 +2437,9 @@ def assign_leave_type_import(request):
                 assigned_date=assigned_date,
             )
             if carryforward_days:
-                available_leave.expired_date = leave_type.carryforward_expire_date
+                available_leave.expired_date = leave_type.initial_expiry_date(
+                    assigned_date
+                )
                 try:
                     available_leave.reset_date = leave_type.leave_type_next_reset_date()
                 except Exception:
@@ -2496,10 +2762,15 @@ def assigned_leaves_export(request):
 @login_required
 @hx_request_required
 def get_job_positions(request):
-    department_id = request.GET.get("department")
+    department_ids = [d for d in request.GET.getlist("department") if d]
     form = RestrictLeaveForm()
-    form.fields["job_position"].queryset = JobPosition.objects.filter(
-        department_id=department_id
+    queryset = JobPosition.objects.exclude(department_id__in=department_ids)
+    form.fields["job_position"].queryset = queryset
+    # Keep earlier picks that are still allowed; drop those belonging to
+    # the newly chosen departments.
+    selected = [p for p in request.GET.getlist("job_position") if p]
+    form.initial["job_position"] = list(
+        queryset.filter(pk__in=selected).values_list("pk", flat=True)
     )
 
     return render(request, "leave/job_position_field.html", {"form": form})
@@ -2778,7 +3049,9 @@ def user_leave_request(request, id):
         holidays = Holidays.objects.filter(Q(is_specific=False) | Q(employees=employee))
         holiday_dates = holiday_dates_list(holidays)
         company_leaves = CompanyLeaves.objects.all()
-        company_leave_dates = company_leave_dates_list(company_leaves, start_date)
+        company_leave_dates = company_leave_dates_list(
+            company_leaves, start_date, end_date
+        )
         if (
             leave_type.exclude_company_leave == "yes"
             and leave_type.exclude_holiday == "yes"
@@ -2952,7 +3225,7 @@ def user_request_update(request, id):
                     holiday_dates = holiday_dates_list(holidays)
                     company_leaves = CompanyLeaves.objects.all()
                     company_leave_dates = company_leave_dates_list(
-                        company_leaves, start_date
+                        company_leaves, start_date, end_date
                     )
                     if (
                         leave_type.exclude_company_leave == "yes"
@@ -3262,6 +3535,20 @@ def can_view_leave_request(request, leave_request):
     )
 
 
+def can_view_employee_leave(request, employee):
+    """Whether the requester may see this employee's leave tab.
+
+    The same rule `can_view_leave_request` applies to a single request: the
+    employee themselves, anyone holding the model permission, or a manager of
+    *this* employee.
+    """
+    user = request.user
+    if user.has_perm("leave.view_leaverequest"):
+        return True
+    viewer = getattr(user, "employee_get", None)
+    return bool(viewer) and (viewer == employee or check_manager(viewer, employee))
+
+
 @login_required
 @hx_request_required
 def user_request_one(request, id):
@@ -3312,7 +3599,7 @@ def employee_leave(request):
     Returns:
     GET : return Json response of employee
     """
-    leaves = LeaveRequest.employees_on_leave_today(status="approved")
+    leaves = LeaveRequest.employees_on_leave_today(status=LEAVE_IN_EFFECT_STATUSES)
     requests_ids = list(leaves.values_list("id", flat=True))
     today_holidays = Holidays.today_holidays().filter(is_specific=False)
     return render(
@@ -3371,7 +3658,7 @@ def dashboard(request):
     today = date.today()
     requested = LeaveRequest.objects.filter(start_date__gte=today, status="requested")
     approved = LeaveRequest.objects.filter(
-        status="approved", start_date__month=today.month
+        status__in=["approved", "cancel_requested"], start_date__month=today.month
     )
     rejected = LeaveRequest.objects.filter(
         status="rejected", start_date__month=today.month
@@ -3484,7 +3771,7 @@ def employee_leave_chart(request):
         day = datetime.strptime(day, "%Y-%m")
 
     leave_requests = LeaveRequest.objects.filter(
-        employee_id__is_active=True, status="approved"
+        employee_id__is_active=True, status__in=["approved", "cancel_requested"]
     )
     leave_requests = leave_requests.filter(
         start_date__month=day.month, start_date__year=day.year
@@ -3555,7 +3842,7 @@ def department_leave_chart(request):
     from_param = request.GET.get("from_date")
     to_param = request.GET.get("to_date")
     leave_request = LeaveRequest.objects.filter(
-        status="approved", employee_id__is_active=True
+        status__in=["approved", "cancel_requested"], employee_id__is_active=True
     )
     if from_param and to_param:
         try:
@@ -3627,7 +3914,9 @@ def leave_type_chart(request):
 
     leave_types = LeaveType.objects.all()
     leave_type_count = {types.name: 0 for types in leave_types}
-    leave_request = LeaveRequest.objects.filter(status="approved")
+    leave_request = LeaveRequest.objects.filter(
+        status__in=["approved", "cancel_requested"]
+    )
     leave_request = leave_request.filter(
         start_date__month=day.month, start_date__year=day.year
     )
@@ -3708,7 +3997,7 @@ def leave_over_period(request):
             start_of_week = today - timedelta(days=today.weekday())
             period_dates = [start_of_week + timedelta(days=i) for i in range(6)]
     leave_request = LeaveRequest.objects.filter(
-        status="approved",
+        status__in=["approved", "cancel_requested"],
         employee_id__is_active=True,
         start_date__lte=period_dates[-1],
     ).filter(
@@ -4785,7 +5074,7 @@ def employee_available_leave_count(request):
     except (TypeError, ValueError):
         end_date = None
 
-    if leave_type_id and start_date and end_date:
+    if leave_type_id and start_date and end_date and end_date >= start_date:
         leave_type = LeaveType.objects.filter(id=leave_type_id).first()
         if leave_type:
             requested_days = calculate_requested_days(
@@ -4895,7 +5184,7 @@ def cut_available_leave(request, instance_id):
     form = PenaltyAccountForm(employee=instance.employee_id)
     available = AvailableLeave.objects.filter(employee_id=instance.employee_id)
     if request.method == "POST":
-        form = PenaltyAccountForm(request.POST)
+        form = PenaltyAccountForm(request.POST, employee=instance.employee_id)
         if form.is_valid():
             penalty_instance = form.instance
             penalty = PenaltyAccounts()
@@ -4908,7 +5197,7 @@ def cut_available_leave(request, instance_id):
             penalty.minus_leaves = penalty_instance.minus_leaves
             penalty.penalty_amount = penalty_instance.penalty_amount
             penalty.save()
-            form = PenaltyAccountForm()
+            form = PenaltyAccountForm(employee=instance.employee_id)
             messages.success(request, _("Penalty/Fine added"))
     return render(
         request,
@@ -5068,8 +5357,11 @@ def view_leaverequest_comment(request, leave_id):
 
     if request.FILES:
         files = request.FILES.getlist("files")
-        comment_id = request.GET["comment_id"]
-        comment = LeaverequestComment.objects.get(id=comment_id)
+        comment = _comment_on(
+            LeaverequestComment, request.GET.get("comment_id"), leave_id
+        )
+        if comment is None:
+            return render(request, "decorator_404.html")
         attachments = []
         for file in files:
             file_instance = LeaverequestFile()
@@ -5101,6 +5393,16 @@ def create_allocationrequest_comment(request, leave_id):
         return HorillaRedirect(
             request, message=_("Leave allocation request not found.")
         )
+    # Same rule as viewing these comments: the owner, their manager, an
+    # approver named for the request, or a holder of the permission.
+    if not _may_act_on_leave_request(
+        request,
+        leave,
+        "leave.add_leaveallocationrequestcomment",
+        owner_allowed=True,
+    ):
+        messages.warning(request, _("You don't have permission"))
+        return render(request, "decorator_404.html")
 
     emp = request.user.employee_get
     form = LeaveallocationrequestcommentForm(
@@ -5231,8 +5533,11 @@ def view_allocationrequest_comment(request, leave_id):
 
     if request.FILES:
         files = request.FILES.getlist("files")
-        comment_id = request.GET["comment_id"]
-        comment = LeaveallocationrequestComment.objects.get(id=comment_id)
+        comment = _comment_on(
+            LeaveallocationrequestComment, request.GET.get("comment_id"), leave_id
+        )
+        if comment is None:
+            return render(request, "decorator_404.html")
         attachments = []
         for file in files:
             file_instance = LeaverequestFile()
@@ -6016,6 +6321,18 @@ if apps.is_installed("attendance"):
         """
         This method is used to show Leave request comments
         """
+        comp_leave = CompensatoryLeaveRequest.objects.filter(id=comp_leave_id).first()
+        if not comp_leave:
+            return HttpResponse()
+        if not _may_act_on_leave_request(
+            request,
+            comp_leave,
+            "leave.view_compensatoryleaverequestcomment",
+            owner_allowed=True,
+        ):
+            messages.warning(request, _("You don't have permission"))
+            return render(request, "decorator_404.html")
+
         comments = CompensatoryLeaverequestComment.objects.filter(
             request_id=comp_leave_id
         ).order_by("-created_at")
@@ -6025,8 +6342,13 @@ if apps.is_installed("attendance"):
 
         if request.FILES:
             files = request.FILES.getlist("files")
-            comment_id = request.GET["comment_id"]
-            comment = CompensatoryLeaverequestComment.objects.get(id=comment_id)
+            comment = _comment_on(
+                CompensatoryLeaverequestComment,
+                request.GET.get("comment_id"),
+                comp_leave_id,
+            )
+            if comment is None:
+                return render(request, "decorator_404.html")
             attachments = []
             for file in files:
                 file_instance = LeaverequestFile()
@@ -6057,6 +6379,14 @@ if apps.is_installed("attendance"):
             return HorillaRedirect(
                 request, message=_("Compensatory leave request not found.")
             )
+        if not _may_act_on_leave_request(
+            request,
+            comp_leave,
+            "leave.add_compensatoryleaverequestcomment",
+            owner_allowed=True,
+        ):
+            messages.warning(request, _("You don't have permission"))
+            return render(request, "decorator_404.html")
 
         emp = request.user.employee_get
         form = CompensatoryLeaveRequestcommentForm(
@@ -6295,6 +6625,8 @@ def employee_view_individual_leave_tab(request, pk, **kwargs):
         return HorillaRedirect(
             request, message=_("No leave request found matching the query.")
         )
+    if not can_view_employee_leave(request, employee):
+        return handle_no_permission(request)
     instances = (
         LeaveRequest.objects.filter(employee_id=employee)
         if apps.is_installed("leave")
@@ -6494,5 +6826,90 @@ def leave_balance_ledger(request, pk):
             "instance": instance,
             "ledger": instance.build_ledger(),
             "forecast": instance.forecast_next_reset(),
+            "expiry_forecast": instance.forecast_carryforward_expiry(),
+            "reset_due": instance.is_reset_due(),
         },
+    )
+
+
+@login_required
+@hx_request_required
+@permission_required("leave.change_availableleave")
+@require_http_methods(["POST"])
+def leave_balance_reset(request, pk):
+    """
+    Runs the missed reset for one available leave and re-renders its ledger sidebar.
+    """
+    instance = AvailableLeave.find(pk)
+    if not instance:
+        messages.error(request, _("Leave balance not found."))
+        return HttpResponse("")
+    applied = instance.is_reset_due() and reset_available_leave(
+        instance,
+        timezone.localdate(),
+        reset_reason=gettext_noop("Leave reset manually"),
+        expiry_reason=gettext_noop("Carryforward expired manually"),
+    )
+    if applied:
+        messages.success(request, _("Missed leave reset applied."))
+    else:
+        messages.info(request, _("No reset is due for this leave balance."))
+    return render(
+        request,
+        "cbv/assigned_leave/leave_ledger_sidebar.html",
+        {
+            "instance": instance,
+            "ledger": instance.build_ledger(),
+            "forecast": instance.forecast_next_reset(),
+            "expiry_forecast": instance.forecast_carryforward_expiry(),
+            "reset_due": instance.is_reset_due(),
+            "after_reset": True,
+        },
+    )
+
+
+@login_required
+@hx_request_required
+@permission_required("leave.change_leavetype")
+@require_http_methods(["POST"])
+def leave_type_run_missed_resets(request, pk):
+    """
+    Runs every missed reset for one leave type and reports the outcome as JSON.
+    """
+    leave_type = LeaveType.find(pk)
+    if not leave_type:
+        return JsonResponse({"error": __("Leave type not found.")}, status=404)
+    if not leave_type.reset:
+        return JsonResponse(
+            {"error": __("This leave type does not reset.")}, status=400
+        )
+    total_count = leave_type.employee_available_leave.count()
+    result = run_missed_resets(
+        leave_type,
+        reset_reason=gettext_noop("Leave reset manually"),
+        expiry_reason=gettext_noop("Carryforward expired manually"),
+    )
+    reset_count = len(result["reset"])
+    failed_count = len(result["failed"])
+    return JsonResponse(
+        {
+            "reset": reset_count,
+            "failed": failed_count,
+            "not_due": max(total_count - reset_count - failed_count, 0),
+            "reset_rows": [
+                {
+                    "name": str(row["available_leave"].employee_id),
+                    "before": row["before"],
+                    "after": row["after"],
+                }
+                for row in result["reset"][:100]
+            ],
+            "failed_rows": [
+                {
+                    "name": str(row["available_leave"].employee_id),
+                    "error": row["error"],
+                }
+                for row in result["failed"][:100]
+            ],
+        }
     )

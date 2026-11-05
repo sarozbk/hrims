@@ -18,7 +18,7 @@ import json
 import os
 import random
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from itertools import chain
 from urllib.parse import parse_qs
 
@@ -30,13 +30,16 @@ from dateutil import parser as dateutil_parser
 from django import template
 from django.contrib import messages
 from django.core import serializers
+from django.core.cache import cache
 from django.core.cache import cache as CACHE
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.mail import EmailMessage
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
 from django.db.models import Case, IntegerField, ProtectedError, Q, When
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -91,6 +94,7 @@ from recruitment.filters import (
 )
 from recruitment.forms import (
     AddCandidateForm,
+    ApplicationForm,
     CandidateCreationForm,
     CandidateDocumentForm,
     CandidateDocumentRejectForm,
@@ -271,9 +275,6 @@ def recruitment(request):
                 post_recruitment_in_linkedin(
                     request, recruitment_obj, recruitment_obj.linkedin_account_id
                 )
-            for survey in form.cleaned_data["survey_templates"]:
-                for sur in survey.recruitmentsurvey_set.all():
-                    sur.recruitment_ids.add(recruitment_obj)
             messages.success(request, _("Recruitment added."))
             with contextlib.suppress(Exception):
                 managers = recruitment_obj.recruitment_managers.select_related(
@@ -347,12 +348,6 @@ def recruitment_update(request, rec_id):
             request, _("The recruitment entry you are trying to edit does not exist.")
         )
         return HorillaRedirect(request)
-    survey_template_list = []
-    survey_templates = RecruitmentSurvey.objects.filter(
-        recruitment_ids=rec_id
-    ).distinct()
-    for survey in survey_templates:
-        survey_template_list.append(survey.template_id.all())
     form = RecruitmentCreationForm(instance=recruitment_obj)
     if request.GET:
         form = RecruitmentCreationForm(request.GET)
@@ -363,9 +358,6 @@ def recruitment_update(request, rec_id):
         form = RecruitmentCreationForm(request.POST, instance=recruitment_obj)
         if form.is_valid():
             recruitment_obj = form.save()
-            for survey in form.cleaned_data["survey_templates"]:
-                for sur in survey.recruitmentsurvey_set.all():
-                    sur.recruitment_ids.add(recruitment_obj)
             recruitment_obj.save()
             if len(form.changed_data) > 0:
                 if (
@@ -598,7 +590,7 @@ def update_candidate_stage_and_sequence(request):
         )
     messages.success(request, _("Sequence updated"))
 
-    if stage.stage_type == "hired" and stage.recruitment_id.is_vacancy_filled():
+    if stage.stage_type == "shortlisted" and stage.recruitment_id.is_vacancy_filled():
         context["message"] = _("Vacancy is filled")
         context["vacancy"] = stage.recruitment_id.vacancy
 
@@ -625,7 +617,7 @@ def update_candidate_sequence(request):
         pipeline_cache["candidates"].filter(id=cand_id).update(
             sequence=index,
             stage_id=stage,
-            hired=(stage.stage_type == "hired"),
+            hired=(stage.stage_type == "shortlisted"),
         )
 
     return JsonResponse({})
@@ -702,7 +694,7 @@ def change_candidate_stage(request):
                     if stage:
                         candidate.stage_id = stage
                         candidate.save()
-                        if stage.stage_type == "hired":
+                        if stage.stage_type == "shortlisted":
                             if stage.recruitment_id.is_vacancy_filled():
                                 context["message"] = _("Vaccancy is filled")
                                 context["vacancy"] = stage.recruitment_id.vacancy
@@ -718,7 +710,7 @@ def change_candidate_stage(request):
                 if stage:
                     candidate.stage_id = stage
                     candidate.save()
-                    if stage.stage_type == "hired":
+                    if stage.stage_type == "shortlisted":
                         if stage.recruitment_id.is_vacancy_filled():
                             context["message"] = _("Vaccancy is filled")
                             context["vacancy"] = stage.recruitment_id.vacancy
@@ -878,23 +870,8 @@ def recruitment_close_pipeline(request, rec_id):
         messages.success(request, _("Recruitment closed successfully"))
     except (Recruitment.DoesNotExist, OverflowError):
         messages.error(request, _("Recruitment Does not exists.."))
-    # Two different callers hit this same view via htmx:
-    # - recruitment_pipeline_actions() (Pipeline page): hx-target points
-    #   straight at #pipelineContainer, so answering with cbv-pipeline-tab's
-    #   own freshly rendered content swaps it in directly.
-    # - the Recruitment list page's own Actions column: no special-casing,
-    #   same as before this view knew about the Pipeline page at all --
-    #   HorillaRedirect(request) answers an htmx request with an
-    #   HX-Redirect header, which htmx treats as a full browser redirect
-    #   regardless of hx-swap="none". That's what was actually making this
-    #   page's Close/Reopen "just work": a full reload back to the same
-    #   page, not the hx-on::after-request/$('#applyFilter') indirection
-    #   (which Archive/Delete also carry, unused for the same reason --
-    #   hx-swap="none" never inserts a response body anywhere, so a script
-    #   tag in it never runs; their own real mechanism is this same
-    #   redirect). Only the Pipeline caller gets the different, no-reload
-    #   treatment it specifically asked for.
-    if request.headers.get("HX-Target") == "pipelineContainer":
+    # The pipeline page re-renders its tab strip; other callers are redirected.
+    if request.headers.get("HX-Target") == "pipelineTabStrip":
         from recruitment.cbv.pipeline import RecruitmentTabView
 
         return RecruitmentTabView.as_view()(request)
@@ -909,7 +886,7 @@ def recruitment_reopen_pipeline(request, rec_id):
     """
     recruitment_obj = Recruitment.find(rec_id)
     if not recruitment_obj:
-        if request.headers.get("HX-Target") == "pipelineContainer":
+        if request.headers.get("HX-Target") == "pipelineTabStrip":
             messages.error(request, _("No Recruitment found matching the query."))
             from recruitment.cbv.pipeline import RecruitmentTabView
 
@@ -921,8 +898,7 @@ def recruitment_reopen_pipeline(request, rec_id):
     recruitment_obj.closed = False
     recruitment_obj.save()
     messages.success(request, _("Recruitment reopend successfully"))
-    # See recruitment_close_pipeline's comment above.
-    if request.headers.get("HX-Target") == "pipelineContainer":
+    if request.headers.get("HX-Target") == "pipelineTabStrip":
         from recruitment.cbv.pipeline import RecruitmentTabView
 
         return RecruitmentTabView.as_view()(request)
@@ -967,7 +943,7 @@ def candidate_stage_update(request, cand_id):
         or is_recruitmentmanager(rec_id=stage_obj.recruitment_id.id)[0]
     ):
         candidate_obj.stage_id = stage_obj
-        candidate_obj.hired = stage_obj.stage_type == "hired"
+        candidate_obj.hired = stage_obj.stage_type == "shortlisted"
         candidate_obj.canceled = stage_obj.stage_type == "cancelled"
         candidate_obj.schedule_date = schedule_date
         candidate_obj.start_onboard = False
@@ -1688,6 +1664,7 @@ def interview_employee_remove(request, interview_id, employee_id):
 
 
 @login_required
+@permission_required(perm="recruitment.view_candidate")
 def candidate_export(request):
     """
     This method is used to Export candidate data
@@ -1832,13 +1809,15 @@ def candidate_history_tab(request, pk, **kwargs):
     method for rendering history tab
     """
 
+    from recruitment.history import build_candidate_history_context
+
     candidate_obj = Candidate.find(pk)
+    if candidate_obj is None:
+        return HttpResponse()
     return render(
         request,
         "candidate/history.html",
-        {
-            "candidate": candidate_obj,
-        },
+        build_candidate_history_context(request, candidate_obj),
     )
 
 
@@ -2145,6 +2124,18 @@ def candidate_conversion(request, cand_id, **kwargs):
             return JsonResponse({"message": "Already converted"}, status=200)
         return HorillaRedirect(request)
 
+    if (
+        not candidate_obj.is_active
+        or candidate_obj.canceled
+        or candidate_obj.is_offer_rejected
+    ):
+        messages.error(
+            request, _("Only active, non-rejected candidates can be converted.")
+        )
+        if container_request:
+            return JsonResponse({"message": "Candidate not eligible"}, status=400)
+        return HorillaRedirect(request)
+
     user_exists = HorillaUser.objects.filter(username=candidate_obj.email).exists()
     employee_exists = Employee.objects.filter(
         employee_user_id__username=candidate_obj.email
@@ -2295,7 +2286,7 @@ def form_send_mail(request, cand_id=None):
                 "{{ request.scheme }}://{{ request.get_host }}/recruitment/candidate-login/"
                 "</a></p>"
                 '<p style="margin: 0 0 8px 0; font-size: 14px; color: #111827;"><strong>Username (Email):</strong> {{instance.email}}</p>'
-                '<p style="margin: 0; font-size: 14px; color: #111827;"><strong>Password (Mobile Number):</strong> {{instance.mobile}}</p>'
+                '<p style="margin: 0; font-size: 14px; color: #111827;"><strong>Password:</strong> the one in your invitation email</p>'
                 "</div>"
                 '<p style="font-size: 13px; color: #6b7280; margin: 0 0 18px 0;">'
                 "For security, please keep these credentials private.</p>"
@@ -2837,12 +2828,8 @@ def skill_zone_delete(request, sz_id):
             messages.error(request, _("Talent pool not found."))
     except ProtectedError:
         messages.error(request, _("Related entries exists"))
-    if request.META.get("HTTP_HX_REQUEST") == "true":
-        response = HttpResponse(status=204)
-        response["HX-Trigger"] = "skillZoneContainerReload"
-        return response
     return HttpResponse(
-        "<script>$('.filterButton')[0].click();reloadMessage();</script>"
+        "<script>$('.filterButton').first().click();reloadMessage();</script>"
     )
 
 
@@ -3294,24 +3281,205 @@ def candidate_self_tracking_rating_option(request):
     return HttpResponse("<script>$('#reloadMessagesButton').click()</script>")
 
 
+@login_required
+@hx_request_required
+@permission_required("recruitment.add_recruitmentgeneralsetting")
+def default_probation_period(request):
+    """
+    This method is used to update the recruitment general setting's default
+    probation period, used to auto-fill a candidate's probation end date
+    """
+    selected_company = request.session.get("selected_company")
+    company_id = (
+        None if not selected_company or selected_company == "all" else selected_company
+    )
+    settings, created = RecruitmentGeneralSetting.objects.get_or_create(
+        company_id_id=company_id
+    )
+    try:
+        settings.default_probation_period = max(
+            0, int(request.GET.get("default_probation_period"))
+        )
+        settings.save()
+
+        candidates = Candidate.objects.filter(joining_date__isnull=False)
+        if company_id is not None:
+            candidates = candidates.filter(recruitment_id__company_id=company_id)
+        else:
+            companies_with_override = RecruitmentGeneralSetting.objects.exclude(
+                company_id__isnull=True
+            ).values_list("company_id_id", flat=True)
+            candidates = candidates.exclude(
+                recruitment_id__company_id__in=companies_with_override
+            )
+        candidates = list(candidates)
+        for candidate in candidates:
+            candidate.probation_end = candidate.joining_date + timedelta(
+                days=settings.default_probation_period
+            )
+        Candidate.objects.bulk_update(candidates, ["probation_end"])
+
+        messages.success(request, _("Default probation period updated"))
+    except (TypeError, ValueError):
+        messages.error(request, _("Enter a valid number of days"))
+    return HttpResponse("<script>$('#reloadMessagesButton').click()</script>")
+
+
+# The candidate login checks its password itself, so neither django-axes nor
+# the failed-login handler sees it. Without a limit an emailed password could
+# be guessed without end. Per email: guessing one candidate's password. Per
+# client address, higher: one office or network behind a shared address must
+# not lock each other out.
+CANDIDATE_LOGIN_WINDOW = 15 * 60
+CANDIDATE_LOGIN_EMAIL_LIMIT = 5
+CANDIDATE_LOGIN_ADDRESS_LIMIT = 20
+
+
+def _candidate_login_counters(request, email):
+    from horilla.client_ip import client_ip
+
+    return (
+        (f"candidate-login:email:{email.lower()}", CANDIDATE_LOGIN_EMAIL_LIMIT),
+        (
+            f"candidate-login:address:{client_ip(request) or 'unknown'}",
+            CANDIDATE_LOGIN_ADDRESS_LIMIT,
+        ),
+    )
+
+
+def _candidate_login_blocked(counters):
+    return any(cache.get(key, 0) >= limit for key, limit in counters)
+
+
+def _record_candidate_login_failure(counters):
+    for key, _limit in counters:
+        if not cache.add(key, 1, CANDIDATE_LOGIN_WINDOW):
+            try:
+                cache.incr(key)
+            except ValueError:
+                cache.set(key, 1, CANDIDATE_LOGIN_WINDOW)
+
+
 def candidate_login(request):
     if request.method == "POST":
         email = request.POST.get("email", "").strip()
-        mobile = request.POST.get("phone", "").strip()
+        password = request.POST.get("password", "").strip()
+
+        counters = _candidate_login_counters(request, email)
+        if _candidate_login_blocked(counters):
+            return render(
+                request,
+                "candidate/self_login.html",
+                {"error": _("Too many attempts. Please try again in a few minutes.")},
+                status=429,
+            )
 
         backend = CandidateAuthenticationBackend()
-        candidate = backend.authenticate(request, username=email, password=mobile)
+        candidate = backend.authenticate(request, username=email, password=password)
+
+        if candidate is not None and not candidate.is_active:
+            # Archived candidates keep their password but lose portal access.
+            return render(
+                request,
+                "candidate/self_login.html",
+                {
+                    "error": _(
+                        "Your access to application tracking has been disabled. "
+                        "Please contact the recruiter."
+                    )
+                },
+            )
 
         if candidate is not None:
+            cache.delete(counters[0][0])
+            # A new session key on login, so a key planted before it is useless.
+            request.session.cycle_key()
             request.session["candidate_id"] = candidate.id
             request.session["candidate_email"] = candidate.email
+            # The login page shows no messages, so one left by an earlier action
+            # (e.g. "You have been logged out.") would otherwise surface here.
+            list(messages.get_messages(request))
+            messages.success(request, _("Logged in successfully."))
             return redirect("candidate-self-status-tracking")
         else:
+            _record_candidate_login_failure(counters)
             return render(
                 request, "candidate/self_login.html", {"error": "Invalid credentials"}
             )
 
+    if request.GET.get("disabled"):
+        return render(
+            request,
+            "candidate/self_login.html",
+            {
+                "error": _(
+                    "Your access to application tracking has been disabled. "
+                    "Please contact the recruiter."
+                )
+            },
+        )
     return render(request, "candidate/self_login.html")
+
+
+@login_required
+@require_http_methods(["POST"])
+@manager_can_enter(perm="recruitment.change_candidate")
+def candidate_send_invitation(request, cand_id):
+    """
+    Mail the candidate a freshly generated password for the application
+    tracking page. Every call replaces the earlier password; the new one only
+    takes effect once the mail has gone out, so a failed send leaves the
+    candidate's current login working.
+    """
+    reload_messages = HttpResponse(
+        "<script>$('#reloadMessagesButton').click()</script>"
+    )
+
+    if not check_candidate_self_tracking(request)["check_candidate_self_tracking"]:
+        messages.error(request, _("Candidate self tracking is not enabled."))
+        return reload_messages
+    candidate = Candidate.objects.filter(id=cand_id).first()
+    if candidate is None:
+        messages.error(request, _("No Candidate found matching the query."))
+        return reload_messages
+    if not candidate.email:
+        messages.error(request, _("The candidate has no email address."))
+        return reload_messages
+
+    password = Candidate.generate_portal_password()
+    company = (
+        candidate.recruitment_id.company_id if candidate.recruitment_id_id else None
+    )
+    company_name = company.company if company else "Horilla"
+    body = render_to_string(
+        "candidate/invitation_mail.html",
+        {
+            "candidate": candidate,
+            "password": password,
+            "company_name": company_name,
+            "login_url": request.build_absolute_uri(reverse("candidate-login")),
+        },
+    )
+    email = EmailMessage(
+        subject=_("Your application tracking login - %(company)s")
+        % {"company": company_name},
+        body=body,
+        to=[candidate.email],
+    )
+    email.content_subtype = "html"
+    try:
+        email.send()
+    except Exception as e:
+        logger.exception(e)
+        messages.error(request, _("The invitation could not be sent."))
+        return reload_messages
+
+    candidate.issue_portal_password(password)
+    messages.success(
+        request,
+        _("Invitation sent to %(email)s.") % {"email": candidate.email},
+    )
+    return reload_messages
 
 
 def candidate_logout(request):
@@ -3320,7 +3488,255 @@ def candidate_logout(request):
     request.session.pop("candidate_id", None)
     request.session.pop("candidate_email", None)
     messages.success(request, _("You have been logged out."))
-    return redirect("candidate_login")
+    return redirect("candidate-login")
+
+
+# Big enough that the first page already fills the scroll boxes of the tracking
+# page (interviews, documents, notes), so nothing grows after the first paint.
+TRACKING_PAGE_SIZE = 12
+
+
+def _candidate_tracking_sections(candidate):
+    """
+    The three lists shown on the tracking page, keyed by the section name the
+    "load more" endpoint uses.
+    """
+    return {
+        "interviews": candidate.candidate_interview.annotate(
+            is_today=Case(
+                When(interview_date=date.today(), then=0),
+                default=1,
+                output_field=IntegerField(),
+            )
+        )
+        .prefetch_related("employee_id")
+        .order_by("is_today", "-interview_date", "interview_time", "-id"),
+        "documents": candidate.candidatedocument_set.select_related(
+            "document_request_id"
+        ).order_by("-id"),
+        "notes": candidate.stagenote_set.filter(candidate_can_view=True)
+        .select_related("stage_id", "updated_by")
+        .order_by("-id"),
+    }
+
+
+def _employee_role_resolver(candidate):
+    """
+    Returns `role(employee, stage, default)`: the part an employee plays in the
+    candidate's recruitment (Recruitment Manager, then Stage Manager of the given
+    stage), else `default`. The tracking page shows this to the candidate in
+    place of the badge id in `str(employee)`, which means nothing to them.
+    """
+    recruitment = candidate.recruitment_id
+    recruitment_managers = (
+        set(recruitment.recruitment_managers.values_list("id", flat=True))
+        if recruitment
+        else set()
+    )
+    stage_managers = {}
+
+    def role(employee, stage, default):
+        if employee.id in recruitment_managers:
+            return _("Recruitment Manager")
+        if stage is None:
+            return default
+        if stage.id not in stage_managers:
+            stage_managers[stage.id] = set(
+                stage.stage_managers.values_list("id", flat=True)
+            )
+        if employee.id in stage_managers[stage.id]:
+            return _("Stage Manager")
+        return default
+
+    return role
+
+
+def _label_note_authors(page_obj, candidate):
+    """
+    Give each note of the page an `author_name` and `author_role` for the
+    tracking page; a candidate's own note keeps the candidate's name, no role.
+    """
+    role = _employee_role_resolver(candidate)
+    for note in page_obj:
+        employee = note.updated_by
+        if employee is None:
+            note.author_name = note.candidate_id.get_full_name()
+            note.author_role = ""
+        else:
+            note.author_name = employee.get_full_name()
+            note.author_role = role(employee, note.stage_id, _("Recruiter"))
+    return page_obj
+
+
+def _label_interviewers(page_obj, candidate):
+    """
+    Give each interview of the page its `interviewers`, each an employee's name
+    and role in this recruitment (as for the notes), judged by the candidate's
+    current stage.
+    """
+    role = _employee_role_resolver(candidate)
+    stage = candidate.stage_id
+    for interview in page_obj:
+        interview.interviewers = [
+            {
+                "name": employee.get_full_name(),
+                "role": role(employee, stage, _("Interviewer")),
+            }
+            for employee in interview.employee_id.all()
+        ]
+    return page_obj
+
+
+def _filter_tracking_interviews(queryset, status):
+    """
+    Narrow the tracking page's interviews to one of its filter tabs: completed,
+    expired (not completed and past) or upcoming (not completed, today onwards).
+    Any other value leaves the list as it is.
+    """
+    today = date.today()
+    if status == "completed":
+        return queryset.filter(completed=True)
+    if status == "expired":
+        return queryset.filter(completed=False, interview_date__lt=today)
+    if status == "upcoming":
+        return queryset.filter(completed=False, interview_date__gte=today)
+    return queryset
+
+
+def _candidate_tracking_context(candidate):
+    """
+    Build the context for the candidate application tracking page, including
+    the recruitment pipeline progress (done / current / upcoming per stage).
+    Interviews, documents and notes are paginated; the first page is rendered
+    here and the rest is loaded on scroll by `candidate_tracking_items`.
+    """
+    sections = _candidate_tracking_sections(candidate)
+    pages = {
+        name: Paginator(queryset, TRACKING_PAGE_SIZE).get_page(1)
+        for name, queryset in sections.items()
+    }
+    _label_note_authors(pages["notes"], candidate)
+    _label_interviewers(pages["interviews"], candidate)
+
+    stages = []
+    if candidate.recruitment_id_id:
+        # Hired is the end of the pipeline whatever its stored sequence is
+        # (stages added later get a higher sequence than the Hired stage).
+        pipeline = sorted(
+            (
+                stage
+                for stage in candidate.recruitment_id.stage_set.all()
+                if stage.stage_type != "cancelled"
+            ),
+            key=lambda stage: (
+                stage.stage_type == "shortlisted",
+                stage.sequence or 0,
+                stage.id,
+            ),
+        )
+        current_index = next(
+            (
+                i
+                for i, stage in enumerate(pipeline)
+                if stage.id == candidate.stage_id_id
+            ),
+            -1,
+        )
+        for index, stage in enumerate(pipeline):
+            if candidate.canceled and index == current_index:
+                state = "rejected"
+            elif candidate.hired or candidate.converted:
+                state = "done"
+            elif index < current_index:
+                state = "done"
+            elif index == current_index:
+                state = "current"
+            else:
+                state = "upcoming"
+            stages.append({"name": stage.stage, "state": state})
+
+    # "Stage N of M" and the completion percentage in the hero. A hired
+    # candidate has been through every stage whatever the current one is.
+    stage_total = len(stages)
+    if candidate.hired or candidate.converted:
+        stage_position = stage_total
+    else:
+        stage_position = max(current_index + 1, 0) if stages else 0
+    progress_percent = round(stage_position / stage_total * 100) if stage_total else 0
+
+    # The page wears the colour theme of the company the candidate is
+    # recruited for, not the viewer's session (candidates are anonymous).
+    from horilla_theme.models import CompanyTheme, HorillaColorTheme
+
+    company = (
+        candidate.recruitment_id.company_id if candidate.recruitment_id_id else None
+    )
+    company_theme = (
+        CompanyTheme.objects.filter(company=company).select_related("theme").first()
+        if company
+        else None
+    )
+    theme_obj = (
+        company_theme.theme
+        if company_theme and company_theme.theme
+        else HorillaColorTheme.objects.filter(is_default=True).first()
+    )
+
+    return {
+        "theme_obj": theme_obj,
+        "tracking_company": company,
+        "candidate": candidate,
+        "stages": stages,
+        "candidate_initials": "".join(
+            word[0] for word in candidate.get_full_name().split()[:2]
+        ).upper(),
+        "interview_filters": [
+            ("", _("All")),
+            ("upcoming", _("Upcoming")),
+            ("completed", _("Completed")),
+            ("expired", _("Expired")),
+        ],
+        "stage_total": stage_total,
+        "stage_position": stage_position,
+        "progress_percent": progress_percent,
+        "interviews_page": pages["interviews"],
+        "documents_page": pages["documents"],
+        "notes_page": pages["notes"],
+        "interviews_count": pages["interviews"].paginator.count,
+        "documents_count": pages["documents"].paginator.count,
+        "notes_count": pages["notes"].paginator.count,
+        "pending_documents_count": sections["documents"]
+        .filter(Q(document__isnull=True) | Q(document=""))
+        .count(),
+    }
+
+
+@candidate_login_required
+def candidate_tracking_items(request, cand_id, section):
+    """
+    Next page of one of the tracking page's lists (interviews, documents or
+    notes), rendered as rows plus the next "load more" trigger.
+    """
+    candidate = candidate_reachable_by(request, cand_id)
+    if candidate is None:
+        return HttpResponse(status=404)
+    queryset = _candidate_tracking_sections(candidate).get(section)
+    if queryset is None:
+        return HttpResponse(status=404)
+    status = ""
+    if section == "interviews":
+        status = request.GET.get("status", "")
+        queryset = _filter_tracking_interviews(queryset, status)
+    page_obj = Paginator(queryset, TRACKING_PAGE_SIZE).get_page(request.GET.get("page"))
+    if section == "notes":
+        _label_note_authors(page_obj, candidate)
+    elif section == "interviews":
+        _label_interviewers(page_obj, candidate)
+    return render(
+        request,
+        f"candidate/tracking/{section}_items.html",
+        {"candidate": candidate, "page_obj": page_obj, "status": status},
+    )
 
 
 @candidate_login_required
@@ -3338,17 +3754,10 @@ def candidate_self_status_tracking(request):
             return redirect("candidate-login/")
 
         candidate = Candidate.objects.get(pk=candidate_id)
-        interviews = candidate.candidate_interview.annotate(
-            is_today=Case(
-                When(interview_date=date.today(), then=0),
-                default=1,
-                output_field=IntegerField(),
-            )
-        ).order_by("is_today", "-interview_date", "interview_time")
         return render(
             request,
             "candidate/candidate_self_tracking.html",
-            {"candidate": candidate, "interviews": interviews},
+            _candidate_tracking_context(candidate),
         )
     return render(request, "404.html")
 
@@ -3359,9 +3768,10 @@ def candidate_self_status_tracking_managers_view(request, cand_id):
     """
     This method is accessed by the candidates
     """
-    self_tracking_feature = check_candidate_self_tracking(request)[
-        "check_candidate_self_tracking"
-    ]
+    # The candidate's own company decides, not the company picked in the
+    # switcher ("All Company" has a setting of its own and may be off).
+    target = Candidate.objects.filter(pk=cand_id).first()
+    self_tracking_feature = bool(target and target.self_tracking_enabled())
     if self_tracking_feature:
         candidate_id = request.session.get("candidate_id")
         if (
@@ -3378,18 +3788,11 @@ def candidate_self_status_tracking_managers_view(request, cand_id):
             return redirect("candidate-login/")
 
         candidate = Candidate.objects.get(pk=candidate_id)
-        interviews = candidate.candidate_interview.annotate(
-            is_today=Case(
-                When(interview_date=date.today(), then=0),
-                default=1,
-                output_field=IntegerField(),
-            )
-        ).order_by("is_today", "-interview_date", "interview_time")
 
         return render(
             request,
             "candidate/candidate_self_tracking.html",
-            {"candidate": candidate, "interviews": interviews},
+            _candidate_tracking_context(candidate),
         )
     return render(request, "404.html")
 
@@ -3905,6 +4308,68 @@ def view_bulk_resumes(request):
 
 
 @login_required
+@manager_can_enter("recruitment.add_candidate")
+def resume_application_form(request):
+    """
+    Application form to create a candidate from a shortlisted resume.
+    """
+    try:
+        recruitment = Recruitment.objects.get(
+            id=request.GET.get("recruitmentId"), is_published=True
+        )
+        resume_obj = Resume.objects.get(
+            id=request.GET.get("resumeId"), recruitment_id=recruitment
+        )
+    except (Recruitment.DoesNotExist, Resume.DoesNotExist, ValueError, TypeError):
+        messages.error(request, _("Resume not found"))
+        return redirect("cbv-pipeline")
+
+    form = ApplicationForm(initial={"resume": resume_obj.file.url}, shortlisted=True)
+    if request.method == "POST":
+        files = request.FILES.copy()
+        if "resume" not in files:
+            files["resume"] = SimpleUploadedFile(
+                os.path.basename(resume_obj.file.name),
+                resume_obj.file.read(),
+                content_type="application/pdf",
+            )
+        form = ApplicationForm(request.POST, files, shortlisted=True)
+        if form.is_valid():
+            candidate_obj = form.save(commit=False)
+            candidate_obj.source = "application"
+            candidate_obj.referral_source = (
+                candidate_obj.referral_source or "resume_shortlisting"
+            )
+            candidate_obj.stage_id = (
+                candidate_obj.recruitment_id.get_or_create_applied_stage()
+            )
+            candidate_obj.save()
+            resume_obj.is_candidate = True
+            resume_obj.save(update_fields=["is_candidate"])
+            CACHE.delete(f"matching_resumes_{recruitment.id}")
+            messages.success(request, _("Candidate created from resume."))
+            return render(
+                request,
+                "candidate/success.html",
+                {
+                    "candidate": candidate_obj,
+                    "recruitment": recruitment,
+                    "shortlisted": True,
+                },
+            )
+        for name, errors in form.errors.items():
+            label = "" if name == "__all__" else f"{form.fields[name].label}: "
+            for error in errors:
+                messages.error(request, f"{label}{error}")
+
+    return render(
+        request,
+        "candidate/application_form.html",
+        {"form": form, "recruitment": recruitment, "resume": resume_obj},
+    )
+
+
+@login_required
 @hx_request_required
 @manager_can_enter("recruitment.add_candidate")
 def add_bulk_resumes(request):
@@ -4044,7 +4509,14 @@ def matching_resumes(request, rec_id):
             text = extract_words_from_pdf(resume.file)
             matching_skills_count = skill_match_count(text, skills)
 
-            item = {"resume": resume, "matching_skills_count": matching_skills_count}
+            file_name = re.sub(
+                r"-[0-9a-f]{8}(?=\.[^.]+$)", "", os.path.basename(resume.file.name)
+            )
+            item = {
+                "resume": resume,
+                "file_name": file_name,
+                "matching_skills_count": matching_skills_count,
+            }
             if not len(text):
                 item["image_pdf"] = True
 
@@ -4067,9 +4539,6 @@ def matching_resumes(request, rec_id):
         )
 
         ranked_resumes = non_candidate_resumes + candidate_resumes
-        # A finite TTL, not timeout=None: the ranking is derived from resume
-        # files and the recruitment's skill list, both of which change without
-        # every edit path remembering to invalidate this key.
         CACHE.set(cache_key, ranked_resumes, timeout=900)
 
     return render(
@@ -4200,7 +4669,12 @@ def document_create(request, id):
     if request.method == "POST":
         form = CandidateDocumentForm(request.POST, request.FILES)
         if form.is_valid():
-            form.save()
+            document = form.save(commit=False)
+            # A document uploaded by a user who is allowed to add documents
+            # (admin / permitted employee) needs no further review.
+            if request.user.has_perm("recruitment.add_candidatedocument"):
+                document.status = "approved"
+            document.save()
             messages.success(request, _("Document created successfully."))
             return HorillaRedirect(request)
 
@@ -4539,10 +5013,7 @@ def candidate_add_notes(request, cand_id):
     return render(
         request,
         "candidate/candidate_self_tracking.html",
-        {
-            "candidate": candidate,
-            "note_form": form,
-        },
+        {**_candidate_tracking_context(candidate), "note_form": form},
     )
 
 
@@ -4572,7 +5043,15 @@ def delete_candidate_rejection(request, rej_id):
     try:
         instance = RejectedCandidate.objects.filter(id=rej_id).first()
         if instance:
+            candidate = instance.candidate_id
             instance.delete()
+            # Deleting the reason record alone leaves the candidate sitting in
+            # the rejected stage with canceled=True -- nothing cascades from
+            # RejectedCandidate to Candidate. Move them back to the
+            # recruitment's Applied stage so this is a real "un-reject", not
+            # just deleting the stored reason text.
+            candidate.move_to_applied_stage()
+            candidate.save()
             messages.success(request, _("Candidate rejection deleted successfully"))
         else:
             messages.error(request, _("Candidate rejection not found"))

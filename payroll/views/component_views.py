@@ -38,6 +38,7 @@ from base.methods import (
     filter_own_records,
     get_key_instances,
     get_next_month_same_date,
+    get_nth_month_same_date,
     has_export_access,
     sortby,
 )
@@ -131,6 +132,8 @@ def allowances_deductions_tab(request, emp_id):
     active_contracts = employee.contract_set.filter(contract_status="active").first()
     basic_pay = active_contracts.wage if active_contracts else None
     if basic_pay:
+        from payroll.methods.component_engine import group_targeted
+
         allowances = (
             Allowance.objects.filter(specific_employees=employee)
             | Allowance.objects.filter(is_condition_based=True).exclude(
@@ -139,6 +142,7 @@ def allowances_deductions_tab(request, emp_id):
             | Allowance.objects.filter(include_active_employees=True).exclude(
                 exclude_employees=employee
             )
+            | group_targeted(employee, Allowance)
         )
 
         for allowance in allowances:
@@ -186,6 +190,7 @@ def allowances_deductions_tab(request, emp_id):
             | Deduction.objects.filter(
                 include_active_employees=True,
             ).exclude(exclude_employees=employee)
+            | group_targeted(employee, Deduction)
         )
         for deduction in deductions:
             applicable = True
@@ -1093,6 +1098,7 @@ def view_individual_payslip(request, employee_id, start_date, end_date):
                 "Payslip data not found for the specified employee and date range."
             ),
         )
+    payslip_data["company"] = Company.objects.filter(hq=True).first()
     return render(
         request,
         "payroll/payslip/individual_payslip.html",
@@ -1286,11 +1292,10 @@ def payslip_export(request):
             id_list = json.loads(ids)
             payslips = Payslip.objects.filter(id__in=id_list)
 
-    for field in forms.excel_columns:
-        value = field[0]
-        key = field[1]
-        if value in selected_fields:
-            selected_columns.append((value, key))
+    excel_columns_map = dict(forms.excel_columns)
+    for value in selected_fields:
+        if value in excel_columns_map:
+            selected_columns.append((value, excel_columns_map[value]))
 
     for column_value, column_name in selected_columns:
         nested_attributes = column_value.split("__")
@@ -1681,7 +1686,12 @@ def edit_installment_amount(request):
 
         # If there are no deductions after the current one and a new installment amount is calculated,
         if len(deductions_after) == 0 and new_installment != 0:
-            date = get_next_month_same_date(deduction.one_time_date)
+            if loan.installment_start_date:
+                date = get_nth_month_same_date(
+                    loan.installment_start_date, len(deductions)
+                )
+            else:
+                date = get_next_month_same_date(deduction.one_time_date)
             installment = create_deductions(loan, new_installment, date)
             loan.deduction_ids.add(installment)
 
@@ -1690,14 +1700,17 @@ def edit_installment_amount(request):
     else:
         messages.error(request, _("Cannot change paid installments "))
 
-    return render(
+    response = render(
         request,
         "cbv/loan/loan_installment_table.html",
         {
-            "installments": loan.deduction_ids.all(),
+            "installments": loan.deduction_ids.all().order_by("one_time_date"),
             "loan": loan,
         },
     )
+    # The message goes to the page's own toast; only the rows are swapped.
+    response["HX-Trigger"] = "showMessages"
+    return response
 
 
 @login_required
@@ -2222,11 +2235,10 @@ def payslip_detailed_export_data(request):
     if not selected_fields:
         selected_fields = form.fields["selected_fields"].initial
 
-    for field in forms.excel_columns:
-        value, key = field
-
-        if value in selected_fields:
-            selected_columns.append((value, key))
+    excel_columns_map = dict(forms.excel_columns)
+    for value in selected_fields:
+        if value in excel_columns_map:
+            selected_columns.append((value, excel_columns_map[value]))
 
     selected_columns += [
         (value.title, value.title)

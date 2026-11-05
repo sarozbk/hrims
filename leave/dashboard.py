@@ -6,14 +6,13 @@ Accessible at /leave/dashboard/modern/ alongside the existing dashboard.
 
 from datetime import date, timedelta
 
-from django.contrib.auth.decorators import login_required
 from django.db.models import Count, F, FloatField, Q, Sum
 from django.db.models.functions import Coalesce
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils.translation import gettext as _
 
-from horilla.decorators import permission_required
+from horilla.decorators import login_required, permission_required
 
 
 def _parse_period(request):
@@ -54,7 +53,7 @@ def leave_kpi_data(request):
     ).count()
 
     approved_this_month = LeaveRequest.objects.filter(
-        status="approved",
+        status__in=["approved", "cancel_requested"],
         start_date__gte=first_of_month,
         start_date__lte=to_date,
         employee_id__is_active=True,
@@ -70,7 +69,7 @@ def leave_kpi_data(request):
     # Always reflects who is on leave right now, independent of the date filter
     on_leave_today_qs = LeaveRequest.objects.filter(
         start_date__lte=real_today,
-        status="approved",
+        status__in=["approved", "cancel_requested"],
         employee_id__is_active=True,
     ).filter(
         Q(end_date__gte=real_today) | Q(end_date__isnull=True, start_date=real_today)
@@ -94,7 +93,7 @@ def leave_kpi_data(request):
 
     # Total leave days approved within the selected period
     total_days_used = LeaveRequest.objects.filter(
-        status="approved",
+        status__in=["approved", "cancel_requested"],
         start_date__gte=first_of_month,
         start_date__lte=to_date,
         employee_id__is_active=True,
@@ -149,7 +148,7 @@ def leave_department_trend(request):
     dept_field = "employee_id__employee_work_info__department_id__department"
     rows = (
         LeaveRequest.objects.filter(
-            status__in=["approved", "rejected", "requested"],
+            status__in=["approved", "cancel_requested", "rejected", "requested"],
             start_date__gte=from_date,
             start_date__lte=to_date,
             employee_id__is_active=True,
@@ -164,7 +163,11 @@ def leave_department_trend(request):
         entry = by_dept.setdefault(
             dept, {"department": dept, "approved": 0, "rejected": 0, "pending": 0}
         )
-        key = "pending" if row["status"] == "requested" else row["status"]
+        key = (
+            "pending"
+            if row["status"] == "requested"
+            else "approved" if row["status"] == "cancel_requested" else row["status"]
+        )
         entry[key] += row["count"]
 
     departments = sorted(
@@ -198,7 +201,7 @@ def leave_type_distribution(request):
     try:
         data = (
             LeaveRequest.objects.filter(
-                status="approved",
+                status__in=["approved", "cancel_requested"],
                 start_date__gte=first_of_month,
                 start_date__lte=today,
                 employee_id__is_active=True,
@@ -242,7 +245,7 @@ def leave_department_breakdown(request):
     try:
         data = (
             LeaveRequest.objects.filter(
-                status="approved",
+                status__in=["approved", "cancel_requested"],
                 start_date__gte=first_of_month,
                 start_date__lte=today,
                 employee_id__is_active=True,
@@ -293,7 +296,7 @@ def leave_utilization_rate(request):
             row["leave_type_id"]: float(row["total"] or 0)
             for row in (
                 LeaveRequest.objects.filter(
-                    status="approved",
+                    status__in=["approved", "cancel_requested"],
                     start_date__lte=to_date,
                     end_date__gte=from_date,
                     employee_id__is_active=True,
@@ -345,7 +348,7 @@ def leave_paid_unpaid_split(request):
     try:
         data = (
             LeaveRequest.objects.filter(
-                status="approved",
+                status__in=["approved", "cancel_requested"],
                 start_date__gte=first_of_month,
                 start_date__lte=today,
                 employee_id__is_active=True,
@@ -391,7 +394,7 @@ def leave_top_takers(request):
     try:
         data = (
             LeaveRequest.objects.filter(
-                status="approved",
+                status__in=["approved", "cancel_requested"],
                 start_date__gte=first_of_month,
                 start_date__lte=today,
                 employee_id__is_active=True,
@@ -452,7 +455,7 @@ def leave_on_leave_today(request):
             LeaveRequest.objects.filter(
                 start_date__lte=today,
                 end_date__gte=today,
-                status="approved",
+                status__in=["approved", "cancel_requested"],
                 employee_id__is_active=True,
             )
             .select_related("employee_id", "leave_type_id")
@@ -538,7 +541,7 @@ def leave_weekly_pattern(request):
 
     try:
         leaves = LeaveRequest.objects.filter(
-            status="approved",
+            status__in=["approved", "cancel_requested"],
             start_date__lte=to_date,
             end_date__gte=from_date,
             employee_id__is_active=True,
@@ -577,7 +580,7 @@ def leave_upcoming(request):
         next_week = today + timedelta(days=7)
         qs = (
             LeaveRequest.objects.filter(
-                status="approved",
+                status__in=["approved", "cancel_requested"],
                 start_date__gt=today,
                 start_date__lte=next_week,
                 employee_id__is_active=True,

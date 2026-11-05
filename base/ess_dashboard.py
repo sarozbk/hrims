@@ -8,13 +8,13 @@ All data is scoped to request.user.employee_get; no cross-employee access.
 import calendar
 from datetime import date, timedelta
 
-from django.contrib.auth.decorators import login_required
 from django.db.models import Q
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils.translation import gettext as _
 
 from base.templatetags.horillafilters import is_check_in_enabled
+from horilla.decorators import login_required
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -125,7 +125,7 @@ def ess_kpi_data(request):
         ).count()
         upcoming_leave_count = LeaveRequest.objects.filter(
             employee_id=employee,
-            status="approved",
+            status__in=["approved", "cancel_requested"],
             start_date__gte=date.today(),
         ).count()
     except Exception:
@@ -258,7 +258,7 @@ def ess_leave_balance(request):
                 approved = LeaveRequest.objects.filter(
                     employee_id=employee,
                     leave_type_id=al.leave_type_id,
-                    status="approved",
+                    status__in=["approved", "cancel_requested"],
                     start_date__lte=to_date,
                     end_date__gte=from_date,
                 )
@@ -313,6 +313,7 @@ def ess_leave_requests(request):
         status_labels = {
             "requested": _("Pending"),
             "approved": _("Approved"),
+            "cancel_requested": _("Cancel Requested"),
             "rejected": _("Rejected"),
             "cancelled": _("Cancelled"),
         }
@@ -406,7 +407,7 @@ def ess_attendance_calendar(request):
 
         for lr in LeaveRequest.objects.filter(
             employee_id=employee,
-            status="approved",
+            status__in=["approved", "cancel_requested"],
             start_date__lte=to_date,
             end_date__gte=from_date,
         ):
@@ -713,10 +714,19 @@ def ess_announcements(request):
 def ess_birthdays(request):
     """GET /my-dashboard/api/birthdays/ — birthdays of active employees from today to the
     end of the current month (today's first), for the sidebar Birthdays card."""
+    from accessibility.methods import check_is_accessible
     from employee.models import Employee
 
-    if not _get_employee(request):
+    employee = _get_employee(request)
+    if not employee:
         return JsonResponse({"error": "no employee"}, status=403)
+
+    if not check_is_accessible(
+        "birthday_view",
+        f"{request.session.session_key}accessibility_filter",
+        employee,
+    ):
+        return JsonResponse({"birthdays": [], "restricted": True})
 
     today = date.today()
     birthdays = []
@@ -815,3 +825,40 @@ def ess_upcoming(request):
     return JsonResponse(
         {"holidays": holiday_list, "birthday": birthday, "anniversary": anniversary}
     )
+
+
+@login_required
+def ess_interviews(request):
+    """GET /my-dashboard/api/interviews/ — pending interviews (today onwards) where the
+    logged-in employee is an interviewer."""
+    from recruitment.models import InterviewSchedule
+
+    employee = _get_employee(request)
+    if not employee:
+        return JsonResponse({"error": "no employee"}, status=403)
+
+    results = []
+    try:
+        qs = (
+            InterviewSchedule.objects.filter(
+                employee_id=employee,
+                completed=False,
+                interview_date__gte=date.today(),
+            )
+            .select_related("candidate_id")
+            .distinct()
+            .order_by("interview_date", "interview_time")[:10]
+        )
+        for iv in qs:
+            results.append(
+                {
+                    "id": iv.pk,
+                    "candidate": str(iv.candidate_id),
+                    "date": iv.interview_date.strftime("%b %d"),
+                    "time": iv.interview_time.strftime("%I:%M %p"),
+                    "is_today": iv.interview_date == date.today(),
+                }
+            )
+    except Exception:
+        pass
+    return JsonResponse({"interviews": results})

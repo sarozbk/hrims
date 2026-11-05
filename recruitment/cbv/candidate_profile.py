@@ -35,6 +35,9 @@ class CandidateProfileView(HorillaProfileView):
     push_url = "candidate-view-individual"
     key_name = "cand_id"
 
+    def get_queryset(self):
+        return Candidate.objects.get_queryset()
+
     def dispatch(self, request, *args, **kwargs):
         # This endpoint returns only the profile fragment; direct browser opens should
         # land on the full candidate page that loads this fragment via HTMX.
@@ -48,6 +51,27 @@ class CandidateProfileView(HorillaProfileView):
                 redirect_url = f"{redirect_url}?{query_string}"
             return redirect(redirect_url)
         return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["send_mail_url"] = reverse(
+            "send-mail", kwargs={"cand_id": self.kwargs.get("pk")}
+        )
+        context["send_mail_modal"] = "#genericModal"
+        context["send_mail_target"] = "#genericModalBody"
+        return context
+
+    def get_status_ribbon(self, instance):
+        if instance.canceled:
+            return {"label": _("Rejected"), "variant": "danger"}
+        if instance.hired:
+            # "hired" is literally defined (Candidate.save()) as "current
+            # stage's stage_type is 'shortlisted'" -- the same vocabulary the
+            # rest of the app uses (dashboard KPIs, the pipeline's "Resume
+            # Shortlisting" action), not a separate concept.
+            return {"label": _("Shortlisted"), "variant": "success"}
+        if not instance.is_active:
+            return {"label": _("Archived"), "variant": "secondary"}
 
     actions = [
         {
@@ -66,6 +90,119 @@ class CandidateProfileView(HorillaProfileView):
             "attrs": """
                 href="{get_self_tracking_url}"
                 class="oh-dropdown__link"
+            """,
+        },
+        {
+            "title": _("Convert to Employee"),
+            "accessibility": "recruitment.cbv.accessibility.profile_convert_emp",
+            "attrs": """
+                onclick="return confirm('Are you sure you want to convert this candidate into an employee?')"
+                href="{get_convert_to_emp}"
+                class="oh-dropdown__link"
+            """,
+        },
+        {
+            "title": _("Send Mail"),
+            "attrs": """
+                data-toggle="oh-modal-toggle"
+                data-target="#genericModal"
+                hx-get="{get_send_mail_url}"
+                hx-target="#genericModalBody"
+                hx-swap="innerHTML"
+                class="oh-dropdown__link"
+            """,
+        },
+        {
+            "title": _("Add to Talent Pool"),
+            "accessibility": "recruitment.cbv.accessibility.profile_add_skill_zone",
+            "attrs": """
+                data-toggle="oh-modal-toggle"
+                data-target="#genericModal"
+                hx-get="{get_add_to_skill}"
+                hx-target="#genericModalBody"
+                hx-swap="innerHTML"
+                class="oh-dropdown__link"
+            """,
+        },
+        {
+            "title": _("Request Document"),
+            "accessibility": "recruitment.cbv.accessibility.request_document",
+            "attrs": """
+                data-toggle="oh-modal-toggle"
+                data-target="#genericModal"
+                hx-get="{get_document_request_doc}"
+                hx-target="#genericModalBody"
+                hx-swap="innerHTML"
+                class="oh-dropdown__link"
+            """,
+        },
+        {
+            "title": _("Add to Rejected"),
+            "accessibility": "recruitment.cbv.accessibility.add_reject",
+            "attrs": """
+                data-toggle="oh-modal-toggle"
+                data-target="#genericModal"
+                hx-get="{get_add_to_reject}"
+                hx-target="#genericModalBody"
+                hx-swap="innerHTML"
+                class="oh-dropdown__link"
+            """,
+        },
+        {
+            "title": _("Edit Rejected Candidate"),
+            "accessibility": "recruitment.cbv.accessibility.edit_reject",
+            "attrs": """
+                data-toggle="oh-modal-toggle"
+                data-target="#genericModal"
+                hx-get="{get_add_to_reject}"
+                hx-target="#genericModalBody"
+                hx-swap="innerHTML"
+                class="oh-dropdown__link"
+            """,
+        },
+        {
+            "title": _("Remove Rejection"),
+            "accessibility": "recruitment.cbv.accessibility.remove_reject",
+            "attrs": """
+                hx-post="{get_remove_rejection_url}"
+                hx-swap="none"
+                hx-confirm="Are you sure you want to remove this candidate's rejection?"
+                hx-on::after-request="window.location.reload()"
+                class="oh-dropdown__link"
+            """,
+        },
+        {"divider": True},
+        {
+            "title": _("Archive"),
+            "variant": "danger",
+            "accessibility": "recruitment.cbv.accessibility.archive_perm",
+            "attrs": """
+                hx-post="{get_archive_action_url}"
+                hx-swap="none"
+                hx-confirm="Do you want to archive this candidate?"
+                hx-on::after-request="window.location.reload()"
+            """,
+        },
+        {
+            "title": _("Un-archive"),
+            "variant": "danger",
+            "accessibility": "recruitment.cbv.accessibility.unarchive_perm",
+            "attrs": """
+                hx-post="{get_archive_action_url}"
+                hx-swap="none"
+                hx-confirm="Do you want to un-archive this candidate?"
+                hx-on::after-request="window.location.reload()"
+            """,
+        },
+        {
+            "title": _("Delete"),
+            "variant": "danger",
+            "accessibility": "recruitment.cbv.accessibility.delete_candidate_perm",
+            "attrs": """
+                hx-post="{get_delete_url}"
+                hx-swap="none"
+                hx-confirm="Are you sure you want to delete this candidate?"
+                hx-on::after-request="window.location.href='{get_list_url}'"
             """,
         },
     ]

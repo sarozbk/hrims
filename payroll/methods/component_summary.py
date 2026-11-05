@@ -57,6 +57,22 @@ def _rate(value):
         return _("an unset rate")
 
 
+def _slab_summary(component, unit):
+    """ "0–2h ×1.25, 2h+ ×1.5 of the hourly wage, per week-off hour": the bands as written."""
+    try:
+        slabs = list(component.slabs.all())
+    except Exception:  # a component with no slab relation
+        slabs = []
+    if not slabs:
+        return str(_("Slabs not set"))
+    parts = []
+    for slab in slabs:
+        start = f"{slab.from_hours:g}"
+        span = f"{start}h+" if slab.to_hours is None else f"{start}–{slab.to_hours:g}h"
+        parts.append(f"{span} ×{slab.multiplier:g}")
+    return f"{', '.join(parts)} {_('of the hourly wage')}, {unit}"
+
+
 def calculation_summary(component):
     """
     One line saying how this component's amount is worked out.
@@ -95,6 +111,11 @@ def calculation_summary(component):
         "holiday_overtime": ("amount_per_one_hr", _("per holiday hour")),
     }
     if based_on in per_unit:
+        if (
+            getattr(component, "overtime_calc", "flat") == "slab"
+            and "overtime" in based_on
+        ):
+            return _slab_summary(component, per_unit[based_on][1])
         field, unit = per_unit[based_on]
         return f"{_number(getattr(component, field, None))} {unit}"
 
@@ -202,3 +223,46 @@ def applies_summary(component):
     if extra:
         parts.append(f"+{extra} {_('more')}")
     return ", ".join(parts) or str(_("Always"))
+
+
+GROUP_RULES = {
+    "department": (_("Department"), "apply_departments", "department"),
+    "job_position": (_("Job Position"), "apply_job_positions", "job_position"),
+    "job_role": (_("Job Role"), "apply_job_roles", "job_role"),
+}
+
+
+def _plural(count, word):
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def applied_to_summary(component):
+    """
+    Who the component reaches: its group, everyone, or the employees picked, with the salary
+    structures that carry it. The routes the contract's Components tab sorts by, in a word.
+    """
+    if not getattr(component, "pk", None):
+        return "—"
+    by = getattr(component, "apply_by", "") or "employees"
+    if by in GROUP_RULES:
+        label, relation, attribute = GROUP_RULES[by]
+        names = [
+            str(getattr(row, attribute)) for row in getattr(component, relation).all()
+        ]
+        return f"{label}: {', '.join(names)}" if names else str(label)
+
+    parts = []
+    if getattr(component, "include_active_employees", False):
+        text = str(_("Everyone"))
+        left_out = component.exclude_employees.count()
+        if left_out:
+            text += f" {_('Except')} {left_out}"
+        parts.append(text)
+    else:
+        picked = component.specific_employees.count()
+        if picked:
+            parts.append(_plural(picked, str(_("Employee"))))
+    structures = component.salary_structures.count()
+    if structures:
+        parts.append(_plural(structures, str(_("Structure"))))
+    return ", ".join(parts) or "—"

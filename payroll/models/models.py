@@ -22,7 +22,7 @@ from django.utils.translation import gettext_lazy as _
 from django.utils.translation import ngettext
 
 from base.horilla_company_manager import HorillaCompanyManager
-from base.methods import get_next_month_same_date
+from base.methods import get_nth_month_same_date
 from base.models import (
     Company,
     Department,
@@ -630,6 +630,7 @@ class Contract(HorillaModel):
             context={
                 "instance": self,
                 "component_rows": rows,
+                "component_sections": self.component_sections,
                 # Built here rather than as fifteen body entries: the tab lays
                 # them out in two columns, which the generic one-per-row grid
                 # cannot do.
@@ -702,6 +703,9 @@ class Contract(HorillaModel):
                     "pk", flat=True
                 )
             )
+            from payroll.methods.component_engine import group_targeted
+
+            grouped = set(group_targeted(employee, model).values_list("pk", flat=True))
             reachable = (
                 (
                     model.objects.filter(pk__in=targeted)
@@ -711,6 +715,7 @@ class Contract(HorillaModel):
                     | model.objects.filter(include_active_employees=True).exclude(
                         pk__in=excluded
                     )
+                    | model.objects.filter(pk__in=grouped)
                 )
                 .exclude(is_system=True)
                 .distinct()
@@ -723,6 +728,10 @@ class Contract(HorillaModel):
                     source, source_label = "targeted", _("Added to this employee")
                 elif component.include_active_employees:
                     source, source_label = "everyone", _("Applies to all employees")
+                elif component.pk in grouped:
+                    source, source_label = "group", _(
+                        "Applies to their department, job position or job role"
+                    )
                 else:
                     source, source_label = "conditional", _("Condition based")
 
@@ -734,7 +743,12 @@ class Contract(HorillaModel):
                         "title": component.title,
                         "code": component.code,
                         "sequence": component.sequence,
+                        # Only which side of the payslip it is on: how it is taxed has its own column.
+                        "type_label": (
+                            _("Earning") if kind == "allowance" else _("Deduction")
+                        ),
                         "calculation": calculation_summary(component),
+                        "tax_label": self._tax_label(kind, component),
                         "source": source,
                         "source_label": source_label,
                         # Only a directly-targeted or structure component can
@@ -769,7 +783,13 @@ class Contract(HorillaModel):
                         "title": template.title,
                         "code": template.code,
                         "sequence": template.sequence,
+                        "type_label": (
+                            _("Earning") if kind == "allowance" else _("Deduction")
+                        ),
                         "calculation": _("When it happens"),
+                        "tax_label": self._tax_label(
+                            kind, template, self._standard_tax_value(template)
+                        ),
                         "source": "standard",
                         "source_label": _("Standard, always on"),
                         "can_toggle": False,
@@ -787,6 +807,77 @@ class Contract(HorillaModel):
             )
         )
         return rows
+
+    @staticmethod
+    def _tax_label(kind, component, value=None):
+        """
+        How the component is taxed, in the words of its list: taxable or not for an earning,
+        pre-tax or post-tax for a deduction (a statutory tax row has no such setting).
+        ``value`` overrides the component's own setting.
+        """
+        if kind == "allowance":
+            taxable = component.is_taxable if value is None else value
+            return _("Taxable") if taxable else _("Not Taxable")
+        if component.is_tax:
+            return "—"
+        pre_tax = component.is_pretax if value is None else value
+        return _("Pre-Tax") if pre_tax else _("Post-Tax")
+
+    def _standard_tax_value(self, template):
+        """What a standard item's tax setting is for this employee: their exception, if any."""
+        from payroll.system_components import policy_fields, tax_field
+
+        field = tax_field(template.system_key)
+        if not field:
+            return None
+        return policy_fields(template.system_key, employee=self.employee_id).get(field)
+
+    # How a component reaches an employee, in the order the contract's Components tab lists
+    # them. What applies to everybody, and the standard always-on pay items, share a section:
+    # neither is this contract's to switch off.
+    COMPONENT_SECTIONS = (
+        ("structure", _("Via Structure"), ("structure",)),
+        ("outside", _("Outside The Structure"), ("targeted", "conditional", "group")),
+        ("always", _("Always Applied"), ("everyone", "standard")),
+    )
+
+    # Overtime is paid only when the hours were worked, so an overtime component set to apply to
+    # everyone is still not "always applied": it sits with the ones outside the structure.
+    EVENT_DRIVEN_BASED_ON = ("overtime", "week_off_overtime", "holiday_overtime")
+
+    def _component_section_key(self, row):
+        component = row.get("component")
+        if (
+            row["source"] == "everyone"
+            and getattr(component, "based_on", None) in self.EVENT_DRIVEN_BASED_ON
+        ):
+            return "outside"
+        for key, _label, sources in self.COMPONENT_SECTIONS:
+            if row["source"] in sources:
+                return key
+        return "other"
+
+    @property
+    def component_sections(self):
+        """
+        ``component_rows`` grouped by how each component reaches the employee, empty sections
+        left out: ``[{"key", "label", "rows"}]``. Anything with a route not listed above is kept,
+        in a last section, rather than dropped.
+        """
+        rows = self.component_rows
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(self._component_section_key(row), []).append(row)
+        sections = [
+            {"key": key, "label": label, "rows": grouped[key]}
+            for key, label, _sources in self.COMPONENT_SECTIONS
+            if key in grouped
+        ]
+        if "other" in grouped:
+            sections.append(
+                {"key": "other", "label": _("Other"), "rows": grouped["other"]}
+            )
+        return sections
 
     @property
     def assignable_components(self):
@@ -1606,6 +1697,30 @@ class Allowance(HorillaModel):
         related_name="allowance_excluded",
         blank=True,
     )
+    # Who it reaches when it is not a hand-picked list: everyone in a department,
+    # job position or job role. Evaluated when a payslip is calculated, so a new
+    # joiner in one of them is covered without being added anywhere.
+    APPLY_BY_CHOICES = [
+        ("employees", _("Selected Employees")),
+        ("department", _("Department")),
+        ("job_position", _("Job Position")),
+        ("job_role", _("Job Role")),
+    ]
+    apply_by = models.CharField(
+        max_length=20,
+        default="employees",
+        choices=APPLY_BY_CHOICES,
+        verbose_name=_("Applies By"),
+    )
+    apply_departments = models.ManyToManyField(
+        Department, blank=True, related_name="allowance_apply"
+    )
+    apply_job_positions = models.ManyToManyField(
+        JobPosition, blank=True, related_name="allowance_apply"
+    )
+    apply_job_roles = models.ManyToManyField(
+        JobRole, blank=True, related_name="allowance_apply"
+    )
     is_taxable = models.BooleanField(
         default=True,
         verbose_name=_("Taxable"),
@@ -1742,6 +1857,27 @@ class Allowance(HorillaModel):
         default=0.00,
         blank=True,
         validators=[min_zero],
+    )
+    # How an overtime allowance turns hours into money. "flat" pays
+    # amount_per_one_hr for every hour; "slab" pays the contract's hourly wage
+    # times a multiplier that steps up with the hours worked in a day.
+    OVERTIME_CALC_CHOICES = [
+        ("flat", _("Flat Amount Per Hour")),
+        ("slab", _("Multiplier Slabs On The Hourly Wage")),
+    ]
+    overtime_calc = models.CharField(
+        max_length=10,
+        default="flat",
+        choices=OVERTIME_CALC_CHOICES,
+        verbose_name=_("Overtime Pay"),
+    )
+    prorate_partial_days = models.BooleanField(
+        default=False,
+        verbose_name=_("Prorate Half Days"),
+        help_text=_(
+            "Pay a half day at half the per attendance amount, instead of the "
+            "full amount."
+        ),
     )
     work_type_id = models.ForeignKey(
         WorkType,
@@ -1904,6 +2040,18 @@ class Allowance(HorillaModel):
         method to return is taxable or not
         """
         return _("Yes") if self.is_taxable else _("No")
+
+    def get_calculation_col(self):
+        """How the amount is worked out, in one line, whichever way it is configured."""
+        from payroll.methods.component_summary import calculation_summary
+
+        return calculation_summary(self)
+
+    def get_applied_to_col(self):
+        """Who it reaches."""
+        from payroll.methods.component_summary import applied_to_summary
+
+        return applied_to_summary(self)
 
     def get_is_condition_based(self):
         """
@@ -2222,6 +2370,33 @@ class Allowance(HorillaModel):
         return super().delete(*args, **kwargs)
 
 
+class AllowanceSlab(models.Model):
+    """
+    One band of an overtime slab: the hours of a single day it covers, and the
+    multiplier of the contract's hourly wage paid for each hour inside it.
+    """
+
+    allowance_id = models.ForeignKey(
+        Allowance, on_delete=models.CASCADE, related_name="slabs"
+    )
+    from_hours = models.FloatField(validators=[min_zero], verbose_name=_("From Hour"))
+    to_hours = models.FloatField(
+        null=True,
+        blank=True,
+        validators=[min_zero],
+        verbose_name=_("To Hour"),
+        help_text=_("Leave Empty For The Last Band, Which Has No Upper End."),
+    )
+    multiplier = models.FloatField(validators=[min_zero], verbose_name=_("Multiplier"))
+
+    class Meta:
+        ordering = ["from_hours"]
+
+    def __str__(self):
+        end = self.to_hours if self.to_hours is not None else "+"
+        return f"{self.from_hours}-{end}h x{self.multiplier}"
+
+
 class Deduction(HorillaModel):
     """
     Deduction model
@@ -2266,6 +2441,22 @@ class Deduction(HorillaModel):
         verbose_name=_("Exclude Employees"),
         related_name="deduction_exclude",
         blank=True,
+    )
+    # Who it reaches by department, job position or job role; see Allowance.
+    apply_by = models.CharField(
+        max_length=20,
+        default="employees",
+        choices=Allowance.APPLY_BY_CHOICES,
+        verbose_name=_("Applies By"),
+    )
+    apply_departments = models.ManyToManyField(
+        Department, blank=True, related_name="deduction_apply"
+    )
+    apply_job_positions = models.ManyToManyField(
+        JobPosition, blank=True, related_name="deduction_apply"
+    )
+    apply_job_roles = models.ManyToManyField(
+        JobRole, blank=True, related_name="deduction_apply"
     )
 
     is_tax = models.BooleanField(
@@ -2533,6 +2724,24 @@ class Deduction(HorillaModel):
 
     def get_is_pretax_display(self):
         return _("Yes") if self.is_pretax else _("No")
+
+    def get_calculation_col(self):
+        """How the amount is worked out, in one line, whichever way it is configured."""
+        from payroll.methods.component_summary import calculation_summary
+
+        return calculation_summary(self)
+
+    def get_applied_to_col(self):
+        """Who it reaches."""
+        from payroll.methods.component_summary import applied_to_summary
+
+        return applied_to_summary(self)
+
+    def get_type_col(self):
+        """Tax, a pre-tax deduction or a plain one: the global terms the contract tab uses."""
+        if self.is_tax:
+            return _("Tax")
+        return _("Pre-Tax Deduction") if self.is_pretax else _("Deduction")
 
     def get_is_condition_based_display(self):
         return _("Yes") if self.is_condition_based else _("No")
@@ -2866,6 +3075,27 @@ class Deduction(HorillaModel):
             )
             return (0, {})
         return super().delete(*args, **kwargs)
+
+
+class SystemComponentTaxOverride(models.Model):
+    """
+    How a standard pay item (Loan, Fine, Reimbursement ...) is taxed for one employee, where that
+    differs from the standard component's own setting: ``value`` is "taxable" for an earning and
+    "pre-tax" for a deduction. Read when the employee's lines are generated, and applied to the ones
+    no payslip carries yet when it changes.
+    """
+
+    system_key = models.CharField(max_length=50, db_index=True)
+    employee_id = models.ForeignKey(
+        Employee, on_delete=models.CASCADE, related_name="system_tax_overrides"
+    )
+    value = models.BooleanField()
+
+    class Meta:
+        unique_together = ("system_key", "employee_id")
+
+    def __str__(self):
+        return f"{self.system_key}: {self.employee_id} = {self.value}"
 
 
 class SalaryStructure(HorillaModel):
@@ -3473,6 +3703,18 @@ class Payslip(HorillaModel):
         """
         return dict(self.status_choices).get(self.status)
 
+    @property
+    def status_locked(self):
+        """True while the batch this payslip is in is approved or paid: only the batch moves it."""
+        batch = self.payroll_batch
+        return bool(batch and batch.status in batch.PAYSLIP_STATUS_LOCKED)
+
+    @property
+    def status_lock_message(self):
+        return _(
+            "This payslip is in a batch that is %(status)s. Change the status of the batch instead."
+        ) % {"status": self.payroll_batch.get_status_display().lower()}
+
     def get_download_url(self):
         """
         This method to get download url
@@ -3772,11 +4014,9 @@ class LoanAccount(HorillaModel):
 
         installment_schedule = {}
 
-        installment_date = installment_start_date
-        installment_schedule = {}
-        for _unused in range(total_installments):
+        for index in range(total_installments):
+            installment_date = get_nth_month_same_date(installment_start_date, index)
             installment_schedule[str(installment_date)] = installment_amount
-            installment_date = get_next_month_same_date(installment_date)
 
         return installment_schedule
 
@@ -4003,14 +4243,17 @@ class Reimbursement(HorillaModel):
                     # because nothing set it. Each now follows its own
                     # standard component.
                     for field, value in policy_fields(
-                        self.type
-                        if self.type
-                        in {
-                            "reimbursement",
-                            "leave_encashment",
-                            "bonus_encashment",
-                        }
-                        else "reimbursement"
+                        (
+                            self.type
+                            if self.type
+                            in {
+                                "reimbursement",
+                                "leave_encashment",
+                                "bonus_encashment",
+                            }
+                            else "reimbursement"
+                        ),
+                        employee=self.employee_id,
                     ).items():
                         setattr(reimbursement, field, value)
 
@@ -4269,7 +4512,8 @@ DAYS = [
 
 class PayslipAutoGenerate(models.Model):
     """
-    Model for generating payslip automatically
+    Deprecated: payslip automation now lives on PayPeriodSettings.auto_generate.
+    Kept so existing rows survive; nothing reads it any more.
     """
 
     generate_day = models.CharField(
@@ -4348,11 +4592,6 @@ class PayslipAutoGenerate(models.Model):
                 )
 
     def save(self, *args, **kwargs):
-        from payroll.scheduler import auto_payslip_generate
-
-        if self.auto_generate:
-            auto_payslip_generate()
-
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:

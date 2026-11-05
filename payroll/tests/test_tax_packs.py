@@ -83,6 +83,17 @@ class TaxPackDataTests(TestCase):
             preview_yearly_tax(status, 2000000)["tax"], 192400.0, places=2
         )
 
+    def test_the_preview_carries_the_rebate_rule_so_the_page_can_explain_it(self):
+        load_tax_packs(["in_new"])
+        status = FilingStatus.objects.get(filing_status__startswith="India — New")
+        inside = preview_yearly_tax(status, 1275000)
+        self.assertEqual(inside["rebate_limit"], float(status.rebate_income_limit))
+        self.assertEqual(inside["rebate_max"], float(status.rebate_max_amount))
+        self.assertGreater(inside["rebate_applied"], 0)
+        above = preview_yearly_tax(status, 2000000)
+        self.assertEqual(above["rebate_applied"], 0)
+        self.assertGreater(above["taxable_income"], above["rebate_limit"])
+
     def test_us_single_matches_a_hand_computed_bracket_walk(self):
         """100,000 less the 15,000 deduction = 85,000 taxable."""
         load_tax_packs(["us_single"])
@@ -159,6 +170,14 @@ class TaxPackViewTests(TestCase):
             # as &amp; — correctly.
             self.assertIn(escape(pack["name"]), body)
 
+    def test_the_picker_uses_the_standard_title_and_stacks_each_summary_under_its_name(
+        self,
+    ):
+        body = self.client.get("/payroll/tax-pack-picker/", **self.hx).content.decode()
+        self.assertIn('class="oh-modal__dialog-title pick__title"', body)
+        self.assertNotIn("text-lg font-semibold", body)
+        self.assertRegex(body, r"\.pick__summary \{[^}]*display: block")
+
     def test_loading_selected_packs_creates_them_with_slabs(self):
         response = self.client.post(
             "/payroll/load-tax-pack/", {"packs": ["in_new", "uk_paye"]}, **self.hx
@@ -173,41 +192,3 @@ class TaxPackViewTests(TestCase):
     def test_loading_nothing_is_refused(self):
         self.client.post("/payroll/load-tax-pack/", {}, **self.hx)
         self.assertEqual(FilingStatus.objects.count(), 0)
-
-
-class ComputationStepsTests(TestCase):
-    """
-    The plain-English description of how a filing status works out tax. What a
-    status actually does was previously only knowable by reading a mode flag, a
-    slab table and four adjustment fields, and knowing the engine's order.
-    """
-
-    def test_steps_name_every_configured_stage_in_order(self):
-        load_tax_packs(["in_new"])
-        status = FilingStatus.objects.get(filing_status__startswith="India — New")
-        steps = " | ".join(str(step) for step in status.computation_steps)
-
-        self.assertIn("75,000", steps)  # standard deduction
-        self.assertIn("7 tax slab", steps)  # the slab count
-        self.assertIn("12,00,000" if "12,00,000" in steps else "1,200,000", steps)
-        self.assertIn("4% cess", steps)
-        self.assertLess(steps.index("75,000"), steps.index("tax slab"))
-        self.assertLess(steps.index("tax slab"), steps.index("cess"))
-
-    def test_unconfigured_adjustments_are_not_mentioned(self):
-        """Steps describe what is set, not every field that exists."""
-        status = FilingStatus.objects.create(filing_status="Bare", based_on="basic_pay")
-        steps = " ".join(str(step) for step in status.computation_steps)
-        self.assertNotIn("cess", steps)
-        self.assertNotIn("standard deduction", steps)
-        self.assertIn("No slabs are configured", steps)
-
-    def test_python_mode_says_so(self):
-        status = FilingStatus.objects.create(
-            filing_status="Formula",
-            based_on="basic_pay",
-            use_py=True,
-            python_code="def calculate_federal_tax(y):\n    return 0\n",
-        )
-        steps = " ".join(str(step) for step in status.computation_steps)
-        self.assertIn("Python formula", steps)

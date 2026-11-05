@@ -1132,8 +1132,14 @@
                     <button class="am-period-preset" data-preset="this_week">
                         {% trans "This Week" %}
                     </button>
+                    <button class="am-period-preset" data-preset="last_week">
+                        {% trans "Last Week" %}
+                    </button>
                     <button class="am-period-preset" data-preset="this_month">
                         {% trans "This Month" %}
+                    </button>
+                    <button class="am-period-preset" data-preset="last_month">
+                        {% trans "Last Month" %}
                     </button>
                     <button class="am-period-preset" data-preset="this_year">
                         {% trans "This Year" %}
@@ -1942,12 +1948,20 @@
             function _presetRanges() {
                 const t = new Date();
                 const [wf, wt] = _weekBounds(t);
+                const [lwf, lwt] = _weekBounds(
+                    new Date(t.getFullYear(), t.getMonth(), t.getDate() - 7),
+                );
                 return {
                     today: [_ymd(t), _ymd(t)],
                     this_week: [_ymd(wf), _ymd(wt)],
+                    last_week: [_ymd(lwf), _ymd(lwt)],
                     this_month: [
                         _ymd(_firstOfMonth(t)),
                         _ymd(_lastOfMonth(t)),
+                    ],
+                    last_month: [
+                        _ymd(new Date(t.getFullYear(), t.getMonth() - 1, 1)),
+                        _ymd(new Date(t.getFullYear(), t.getMonth(), 0)),
                     ],
                     this_year: [
                         _ymd(new Date(t.getFullYear(), 0, 1)),
@@ -2015,7 +2029,7 @@
                     .then((r) => r.json())
                     .then((data) => {
                         document.getElementById("am-kpi-grid").innerHTML = `
-                    <a href="{% url 'request-attendance-view' %}?open_tab=2&attendance_date=${data.date}&filter_applied=on" class="am-kpi-card">
+                    <a href="{% url 'employee-view' %}?checked_in_on=${data.date}&is_active=True&filter_applied=on" class="am-kpi-card">
                         <div class="am-kpi-card__icon am-kpi-card__icon--green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg></div>
                         <div class="am-kpi-card__label">{% trans "Checked In Today"|escapejs %}</div>
                         <div class="am-kpi-card__value">${data.present_today}</div>

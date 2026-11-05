@@ -61,7 +61,10 @@ def available_codes(exclude_pk=None, exclude_model=None):
             # A standard pay item holds no amount of its own -- the loan
             # schedule or the attendance record decides it -- so a percentage
             # of one would be a percentage of zero.
-            .exclude(is_system=True).order_by("sequence", "pk")
+            .exclude(is_system=True)
+            # Claims, advances and loans are generated for one employee each,
+            # so they are not components anyone configures or can reference.
+            .exclude(only_show_under_employee=True).order_by("sequence", "pk")
         )
         # Loan and fine instalments are one auto-generated Deduction per due
         # date, so a single loan puts a dozen near-identical rows in here and
@@ -118,6 +121,9 @@ def sample_context(sample_basic):
         for component in (
             model.objects.exclude(code="")
             .exclude(is_system=True)
+            # Claims, advances and loans are generated for one employee each,
+            # so they are not components anyone configures or can reference.
+            .exclude(only_show_under_employee=True)
             .order_by("sequence", "pk")
         ):
             if component.code in context:
@@ -390,6 +396,67 @@ def load_component_library(request):
 
 @login_required
 @permission_required("payroll.view_allowance")
+def employee_pick_rows(request):
+    """
+    Active employees, a page at a time, for the employee picker on a component's form.
+
+    ``?q=`` searches name, badge id and department; ``?department=``, ``?job_position=`` and
+    ``?job_role=`` narrow it to one of each. ``?ids=1`` answers with every matching id instead,
+    for the header box that picks them all. The next page number travels in X-Next-Page, as it
+    does for the applies table, and X-Column names the group column the rows show.
+    """
+    from django.core.paginator import Paginator
+    from django.db.models import Q
+    from django.http import HttpResponse
+    from django.template.loader import render_to_string
+
+    from employee.models import Employee
+
+    query = (request.GET.get("q") or "").strip()
+    employees = (
+        Employee.objects.filter(is_active=True)
+        .select_related(
+            "employee_work_info__department_id",
+            "employee_work_info__job_position_id",
+            "employee_work_info__job_role_id",
+        )
+        .order_by("employee_first_name", "employee_last_name", "pk")
+    )
+    if query:
+        employees = employees.filter(
+            Q(employee_first_name__icontains=query)
+            | Q(employee_last_name__icontains=query)
+            | Q(badge_id__icontains=query)
+            | Q(employee_work_info__department_id__department__icontains=query)
+        )
+    column = "department"
+    for name in ("department", "job_position", "job_role"):
+        value = request.GET.get(name) or ""
+        if value.isdigit():
+            employees = employees.filter(
+                **{f"employee_work_info__{name}_id": int(value)}
+            )
+            if name != "department":
+                column = name
+    if request.GET.get("ids"):
+        return JsonResponse(
+            {"ids": [str(pk) for pk in employees.values_list("pk", flat=True)]}
+        )
+
+    page = Paginator(employees, 25).get_page(request.GET.get("page") or 1)
+    html = render_to_string(
+        "payroll/component/_employee_pick_rows.html",
+        {"rows": page.object_list, "column": column},
+        request=request,
+    )
+    response = HttpResponse(html)
+    response["X-Column"] = column
+    response["X-Next-Page"] = str(page.next_page_number()) if page.has_next() else ""
+    return response
+
+
+@login_required
+@permission_required("payroll.view_allowance")
 def component_applies_rows(request):
     """
     Next page of the "who gets it" table on the component form, as table rows.
@@ -411,10 +478,17 @@ def component_applies_rows(request):
     targeted = set()
     everyone = False
     excluded = set()
-    if pk and model is Allowance:
-        instance = Allowance.objects.get(pk=pk)
+    group = None
+    by = request.GET.get("by") or ""
+    if by in ("department", "job_position", "job_role"):
+        ids = {
+            int(v) for v in (request.GET.get("group") or "").split(",") if v.isdigit()
+        }
+        group = (by, ids)
+    if pk:
+        instance = model.objects.get(pk=pk)
         targeted = set(instance.specific_employees.values_list("pk", flat=True))
-        everyone = bool(instance.include_active_employees)
+        everyone = bool(instance.include_active_employees) and group is None
         excluded = set(instance.exclude_employees.values_list("pk", flat=True))
     if request.GET.get("ids"):
         # Everyone the search matches who is not already on a structure, for the
@@ -433,10 +507,11 @@ def component_applies_rows(request):
         request.GET.get("q", ""),
         everyone=everyone,
         excluded=excluded,
+        group=group,
     )
     html = render_to_string(
         "payroll/component/_applies_rows.html",
-        {"rows": rows, "editable": model is Allowance},
+        {"rows": rows, "editable": True},
         request=request,
     )
     response = HttpResponse(html)

@@ -633,6 +633,11 @@ urlpatterns = [
         recruitment_survey.SurveyTemplateFormView.as_view(),
         name="survey-template-create",
     ),
+    path(
+        "survey-template-duplicate/<int:obj_id>/",
+        recruitment_survey.SurveyTemplateDuplicateFormView.as_view(),
+        name="survey-template-duplicate",
+    ),
     # path(
     #     "survey-template-create",
     #     surveys.create_template,
@@ -803,6 +808,11 @@ urlpatterns = [
         name="candidate-self-tracking-rating-option",
     ),
     path(
+        "default-probation-period/",
+        views.default_probation_period,
+        name="default-probation-period",
+    ),
+    path(
         "candidate-self-status-tracking/",
         views.candidate_self_status_tracking,
         name="candidate-self-status-tracking",
@@ -816,6 +826,16 @@ urlpatterns = [
         "candidate-login/",
         views.candidate_login,
         name="candidate-login",
+    ),
+    path(
+        "candidate-send-invitation/<int:cand_id>/",
+        views.candidate_send_invitation,
+        name="candidate-send-invitation",
+    ),
+    path(
+        "candidate-logout/",
+        views.candidate_logout,
+        name="candidate-logout",
     ),
     path(
         "create-reject-reason/", views.create_reject_reason, name="create-reject-reason"
@@ -864,11 +884,6 @@ urlpatterns = [
         "recruitment-settings-skill-tab/",
         settings_tabs.RecruitmentSettingsSkillTab.as_view(),
         name="recruitment-settings-skill-tab",
-    ),
-    path(
-        "recruitment-settings-stage-tab/",
-        settings_tabs.RecruitmentSettingsStageTab.as_view(),
-        name="recruitment-settings-stage-tab",
     ),
     path(
         "resume-completion/",
@@ -976,6 +991,11 @@ urlpatterns = [
         name="matching-resumes",
     ),
     path(
+        "resume-application-form/",
+        views.resume_application_form,
+        name="resume-application-form",
+    ),
+    path(
         "matching-resume-completion/",
         views.matching_resume_completion,
         name="matching-resume-completion",
@@ -1030,6 +1050,11 @@ urlpatterns = [
         "candidate-document-delete/<int:id>/",
         views.document_delete,
         name="candidate-document-delete",
+    ),
+    path(
+        "candidate-tracking-items/<int:cand_id>/<str:section>/",
+        views.candidate_tracking_items,
+        name="candidate-tracking-items",
     ),
     path(
         "candidate-add-notes/<int:cand_id>/",

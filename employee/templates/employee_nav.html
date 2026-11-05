@@ -276,12 +276,8 @@
                                     {% if perms.employee.add_employee %}
                                         <li class="oh-dropdown__item">
                                             <a
-                                                href="#"
+                                                href="{% url 'master-import' %}?dataset=employees" hx-boost="false"
                                                 class="oh-dropdown__link"
-                                                data-toggle="oh-modal-toggle"
-                                                data-target="#objectCreateModal"
-                                                hx-get="{% url 'work-info-import' %}"
-                                                hx-target="#objectCreateModalTarget"
                                             >
                                                 {% trans "Import" %}
                                             </a>
@@ -303,7 +299,7 @@
                                                 </a>
                                             </li>
                                         {% endif %}
-                                        {% if perms.employee.change_employee %}
+                                        {% if perms.employee.delete_employee %}
                                             <li class="oh-dropdown__item">
                                                 <a href="#" class="oh-dropdown__link" id="archiveEmployees">
                                                     {% trans "Archive" %}
@@ -314,6 +310,8 @@
                                                     {% trans "Un-Archive" %}
                                                 </a>
                                             </li>
+                                        {% endif %}
+                                        {% if perms.employee.change_employee %}
                                             <li class="oh-dropdown__item">
                                                 <a
                                                     hx-get="{% url 'employee-bulk-mail' %}"
