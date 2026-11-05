@@ -5,6 +5,7 @@ import bleach
 from bleach.css_sanitizer import CSSSanitizer
 from django import template
 from django.core.paginator import Page, Paginator
+from django.utils.html import escapejs
 from django.utils.safestring import mark_safe
 
 from base.methods import get_pagination
@@ -81,7 +82,9 @@ _ALLOWED_CSS_PROPERTIES = [
 
 
 class _StrictCSSSanitizer(CSSSanitizer):
-    """Reject declarations whose value contains a CSS function call.
+    """Reject declarations whose value contains a CSS function call, except
+    the handful of numeric-only colour functions a rich-text editor's own
+    colour picker actually emits.
 
     bleach validates the property NAME against the allow-list but does not
     look at the VALUE, so `color: expression(alert(1))` passes its filter
@@ -90,12 +93,21 @@ class _StrictCSSSanitizer(CSSSanitizer):
     is not doing its job, and restricting the property list does not help
     because the payload rides on whichever property is allowed.
 
-    None of _ALLOWED_CSS_PROPERTIES needs a function value, so dropping any
-    declaration containing one costs nothing and closes the whole class --
-    expression(), url(), image-set() and anything added later.
+    Dropping any declaration containing a function call closes that whole
+    class -- expression(), url(), image-set() and anything added later --
+    but Summernote's colour picker writes `color`/`background-color` as
+    rgb()/rgba() (not hex), so the blanket rule was silently discarding
+    every colour a user picked while leaving bold/underline/etc. untouched.
+    _SAFE_COLOR_FUNCTION carves out exactly rgb()/rgba()/hsl()/hsla() with
+    purely numeric/percentage arguments -- nothing nested, no url()/var(),
+    so it can't smuggle the thing this class exists to block.
     """
 
     _FUNCTION_CALL = re.compile(r"[a-z-]+\s*\(", re.IGNORECASE)
+    _SAFE_COLOR_FUNCTION = re.compile(
+        r"^(rgb|rgba|hsl|hsla)\(\s*[\d.]+%?\s*(?:[,\s/]\s*[\d.]+%?\s*){1,3}\)$",
+        re.IGNORECASE,
+    )
 
     def sanitize_css(self, style):
         declarations = []
@@ -103,7 +115,10 @@ class _StrictCSSSanitizer(CSSSanitizer):
             if not declaration.strip():
                 continue
             _, _, value = declaration.partition(":")
-            if self._FUNCTION_CALL.search(value):
+            value = value.strip()
+            if self._FUNCTION_CALL.search(
+                value
+            ) and not self._SAFE_COLOR_FUNCTION.match(value):
                 continue
             declarations.append(declaration.strip())
         return "; ".join(declarations) + (";" if declarations else "")
@@ -170,12 +185,14 @@ def is_manager_of(user, instance, field_name="employee_id"):
     if not hasattr(user, "_horilla_is_manager_of_cache"):
         user._horilla_is_manager_of_cache = {}
     cache = user._horilla_is_manager_of_cache
-    key = (getattr(employee, "id", None), getattr(target_employee, "id", None))
-    if key not in cache:
-        cache[key] = EmployeeWorkInformation.objects.filter(
-            reporting_manager_id=employee, employee_id=target_employee
-        ).exists()
-    return cache[key]
+    manager_id = getattr(employee, "id", None)
+    if manager_id not in cache:
+        cache[manager_id] = set(
+            EmployeeWorkInformation.objects.filter(
+                reporting_manager_id=employee
+            ).values_list("employee_id", flat=True)
+        )
+    return getattr(target_employee, "id", None) in cache[manager_id]
 
 
 @register.filter(name="is_reportingmanager")
@@ -345,6 +362,31 @@ def unique_breadcrumbs(breadcrumbs):
             seen.add(name)
             unique.append(crumb)
     return unique
+
+
+@register.filter(name="collapse_breadcrumbs")
+def collapse_breadcrumbs(crumbs, threshold=4):
+    """
+    Group a long trail for display: the first crumb, the steps in between folded into a "+N"
+    list, and the last two (the parent and the page itself). A trail of ``threshold`` or fewer
+    is left whole.
+    """
+    crumbs = list(crumbs)
+    if len(crumbs) <= int(threshold):
+        return {
+            "collapsed": False,
+            "all": crumbs,
+            "first": None,
+            "hidden": [],
+            "tail": [],
+        }
+    return {
+        "collapsed": True,
+        "all": crumbs,
+        "first": crumbs[0],
+        "hidden": crumbs[1:-2],
+        "tail": crumbs[-2:],
+    }
 
 
 @register.filter(name="readable")
@@ -614,3 +656,12 @@ def config_perms(user):
                 if user.has_perm(perm):
                     return True
     return False
+
+
+@register.filter
+def escapejs_template(value):
+    """
+    ``escapejs`` for text written inside a JavaScript template literal: also
+    escapes ``$``, which ``escapejs`` leaves alone and which starts ``${...}``.
+    """
+    return mark_safe(escapejs(value).replace("$", "\\u0024"))

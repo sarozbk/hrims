@@ -26,7 +26,7 @@ from base.methods import (
     is_reportingmanager,
 )
 from employee.models import Employee
-from horilla_views.cbv_methods import login_required
+from horilla_views.cbv_methods import EmployeeScopeMixin, login_required
 from horilla_views.generic.cbv.views import (
     HorillaDetailedView,
     HorillaFormView,
@@ -96,6 +96,19 @@ class AttendancesRequestListView(HorillaListView):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.search_url = reverse("attendance-list-tab")
+
+    def get_queryset(self, *args, **kwargs):
+        return (
+            super()
+            .get_queryset(*args, **kwargs)
+            .select_related(
+                "employee_id",
+                "shift_id",
+                "work_type_id",
+                "attendance_day",
+                "approved_by",
+            )
+        )
 
     filter_class = AttendanceFilters
     model = Attendance
@@ -261,19 +274,11 @@ class AttendanceListTab(AttendancesRequestListView):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        data = queryset
-        attendances = filtersubordinates(
+        return filtersubordinates(
             request=self.request,
             perm="attendance.view_attendance",
             queryset=queryset,
         )
-        queryset = attendances | data.filter(
-            employee_id__employee_user_id=self.request.user
-        )
-        queryset = queryset.filter(
-            employee_id__is_active=True,
-        )
-        return queryset
 
     actions = [
         {
@@ -488,15 +493,18 @@ class AttendanceListTabDetailView(HorillaDetailedView):
 
 
 @method_decorator(login_required, name="dispatch")
-class NewAttendanceRequestFormView(HorillaFormView):
+class NewAttendanceRequestFormView(EmployeeScopeMixin, HorillaFormView):
     """
     form view for create  attendance request
     """
 
+    scope_perm = "attendance.change_attendance"
+    scope_include_self = True
+
     form_class = NewRequestForm
     model = Attendance
-    new_display_title = _("New Attendance Request")
-    template_name = "requests/attendance/request_form.html"
+    new_display_title = _("Attendance Request")
+    template_name = "requests/attendance/attendance_form.html"
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -541,7 +549,8 @@ class BulkAttendanceRequestFormView(HorillaFormView):
 
     form_class = BulkAttendanceRequestForm
     model = Attendance
-    new_display_title = _("New Attendance Request")
+    new_display_title = _("Attendance Request")
+    template_name = "requests/attendance/attendance_form.html"
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -591,6 +600,7 @@ class UpdateAttendanceRequestFormView(HorillaFormView):
 
     form_class = AttendanceRequestForm
     model = Attendance
+    template_name = "requests/attendance/attendance_form.html"
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)

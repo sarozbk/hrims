@@ -163,7 +163,12 @@ class ReloadField(View):
         queryset = field.queryset
         choices = [(instance.id, instance) for instance in queryset]
         choices.insert(0, ("", "Select option"))
-        choices.append(("dynamic_create", "Dynamic create"))
+        choices.append(
+            (
+                "dynamic_create",
+                _("Create %(label)s") % {"label": field.label or cache_field},
+            )
+        )
 
         form_field = forms.ChoiceField
         if isinstance(field, forms.ModelMultipleChoiceField):
@@ -811,7 +816,14 @@ def export_data(request, *args, **kwargs):
     columns = eval_validate(request.POST.get("columns", "[]"))
 
     export_format = request.POST.get("format", "csv").lower()
-    file_name = request.POST.get("export_file_name", "quick_export")
+    # The modal lets the user clear the name, so fall back to the default.
+    # (and keep it to characters that are safe in a file name / header)
+    from horilla.horilla_middlewares import ExportOptionsMiddleware
+
+    file_name = (
+        ExportOptionsMiddleware._clean_name(request.POST.get("export_file_name", ""))
+        or "quick_export"
+    )
 
     date_range = request.session.get("report_date_range", "")
 

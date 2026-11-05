@@ -1326,7 +1326,9 @@ def get_checked_in_on(queryset, _name, value):
         start_date=value, start_date_breakdown__in=["first_half", "second_half"]
     ) | Q(end_date=value, end_date_breakdown__in=["first_half", "second_half"])
     full_day_leave_ids = (
-        LeaveRequest.objects.filter(status="approved", start_date__lte=value)
+        LeaveRequest.objects.filter(
+            status__in=["approved", "cancel_requested"], start_date__lte=value
+        )
         .filter(Q(end_date__gte=value) | Q(end_date__isnull=True, start_date=value))
         .exclude(half_day_q)
         .values_list("employee_id", flat=True)
@@ -1348,8 +1350,8 @@ def get_not_present_on(queryset, _name, value):
 
 def get_expected_to_check_in(queryset, _name, value):
     """
-    Employees still expected to check in on ``value`` -- i.e. those with no
-    attendance record for that date who also aren't on approved leave that
+    Employees still expected to check in on ``value`` -- i.e. those with a
+    shift, no attendance record for that date, and no approved leave that
     date. Mirrors the dashboard's "Expected to Check In" KPI (see
     base/dashboard.py::dashboard_kpi_data), so the card links here.
     """
@@ -1367,11 +1369,18 @@ def get_expected_to_check_in(queryset, _name, value):
         "employee_id", flat=True
     )
     on_leave_ids = (
-        LeaveRequest.objects.filter(status="approved", start_date__lte=value)
+        LeaveRequest.objects.filter(
+            status__in=["approved", "cancel_requested"], start_date__lte=value
+        )
         .filter(Q(end_date__gte=value) | Q(end_date__isnull=True, start_date=value))
         .values_list("employee_id", flat=True)
     )
-    return queryset.exclude(id__in=present_ids).exclude(id__in=on_leave_ids).distinct()
+    return (
+        queryset.filter(employee_work_info__shift_id__isnull=False)
+        .exclude(id__in=present_ids)
+        .exclude(id__in=on_leave_ids)
+        .distinct()
+    )
 
 
 ATTENDANCE_STATUS_CHOICES = [

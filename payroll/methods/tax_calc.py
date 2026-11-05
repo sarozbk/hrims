@@ -8,6 +8,7 @@ based on their contract details and income information.
 import datetime
 import logging
 
+from payroll.methods.contract_periods import forced_contract
 from payroll.methods.methods import (
     compute_yearly_taxable_amount,
     convert_year_tax_to_period,
@@ -166,6 +167,9 @@ def compute_yearly_tax(filing, yearly_income, employee=None):
         "taxable_income": round(yearly_income, 2),
         "tax_before_relief": round(tax_before_relief, 2),
         "rebate_applied": round(rebate_applied, 2),
+        # The rule itself, so a preview can say why the rebate did or did not apply.
+        "rebate_limit": float(rebate_limit) if rebate_limit is not None else None,
+        "rebate_max": float(rebate_max or 0) if rebate_limit is not None else None,
         "cess_applied": round(cess_applied, 2),
         "tax": round(federal_tax, 2),
         "mode": "formula" if filing.use_py else "slabs",
@@ -201,9 +205,12 @@ def calculate_taxable_amount(**kwargs):
     start_date = kwargs["start_date"]
     end_date = kwargs["end_date"]
     basic_pay = kwargs["basic_pay"]
-    contract = Contract.objects.filter(
-        employee_id=employee, contract_status="active"
-    ).first()
+    contract = (
+        forced_contract(employee)
+        or Contract.objects.filter(
+            employee_id=employee, contract_status="active"
+        ).first()
+    )
     filing = contract.filing_status
     if not filing:
         return 0

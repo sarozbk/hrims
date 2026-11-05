@@ -16,7 +16,7 @@ from django.apps import apps
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.contrib.staticfiles import finders
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.core.paginator import Paginator
 from django.db import models
 from django.db.models import ForeignKey, ManyToManyField, OneToOneField, Q
@@ -637,6 +637,31 @@ def get_subordinate_employee_ids(
         return direct_sub_ids
 
 
+def employees_in_scope(request, employee_ids, perm, include_self=False):
+    """
+    Whether the caller may act on every employee in ``employee_ids``.
+
+    True when the caller holds ``perm``, or every id is one of the caller's
+    subordinates (or the caller, with ``include_self``). It is the same rule
+    ``choosesubordinates`` applies to an employee dropdown, enforced on the
+    server for the ids that were actually submitted.
+    """
+    if request.user.has_perm(perm):
+        return True
+    employee = getattr(request.user, "employee_get", None)
+    if employee is None:
+        return False
+    allowed = {
+        str(pk)
+        for pk in get_subordinate_employee_ids(
+            request, nested=settings.NESTED_SUBORDINATE_VISIBILITY
+        )
+    }
+    if include_self:
+        allowed.add(str(employee.id))
+    return all(str(pk) in allowed for pk in employee_ids)
+
+
 def choosesubordinatesemployeemodel(request, form, perm):
     user = request.user
     if user.has_perm(perm):
@@ -1001,19 +1026,22 @@ def closest_numbers(numbers: list, input_number: int) -> tuple:
     return (previous_number, next_number)
 
 
-def format_export_value(value, employee):
-    work_info = EmployeeWorkInformation.objects.filter(employee_id=employee).first()
-    time_format = (
-        work_info.company_id.time_format
-        if work_info and work_info.company_id
-        else "HH:mm"
-    )
-    date_format = (
-        work_info.company_id.date_format
-        if work_info and work_info.company_id
-        else "MMM. D, YYYY"
-    )
+def export_field_label(verbose_name):
+    """
+    Django derives a boolean field's default verbose name by just replacing
+    the underscores in its field name (e.g. "is_holiday" -> "is holiday"),
+    so export column pickers built from model fields show flags like that
+    in lowercase with a stray leading "is", unlike the other, explicitly
+    labelled columns in the same list. Drop that "is " and title-case the
+    rest so it reads like the rest of the list.
+    """
+    label = str(verbose_name)
+    if label[:3].lower() == "is ":
+        label = label[3:].strip().title()
+    return label
 
+
+def format_export_value(value, time_format, date_format):
     if isinstance(value, time):
         # Convert the string to a datetime.time object
         check_in_time = datetime.strptime(str(value).split(".")[0], "%H:%M:%S").time()
@@ -1127,6 +1155,7 @@ def export_data(request, model, form_class, filter_class, file_name, perm=None):
         "second_half": _("Second Half"),
         "requested": _("Requested"),
         "approved": _("Approved"),
+        "cancel_requested": _("Cancel Requested"),
         "cancelled": _("Cancelled"),
         "rejected": _("Rejected"),
         "cancelled_and_rejected": _("Cancelled & Rejected"),
@@ -1134,6 +1163,17 @@ def export_data(request, model, form_class, filter_class, file_name, perm=None):
         "early_out": _("Early Departure"),
     }
     employee = request.user.employee_get
+    work_info = EmployeeWorkInformation.objects.filter(employee_id=employee).first()
+    time_format = (
+        work_info.company_id.time_format
+        if work_info and work_info.company_id
+        else "HH:mm"
+    )
+    date_format = (
+        work_info.company_id.date_format
+        if work_info and work_info.company_id
+        else "MMM. D, YYYY"
+    )
 
     from horilla.http.response import HorillaRedirect
 
@@ -1149,9 +1189,18 @@ def export_data(request, model, form_class, filter_class, file_name, perm=None):
 
     form = form_class()
     model_fields = model._meta.get_fields()
+    # An export of per-employee records is limited to the requester's own and
+    # their team's unless they hold the model's view permission, which is the
+    # default for callers that name no `perm`. Models with no employee_id
+    # (holidays, candidates) have nothing to scope by here.
+    if perm is None and any(f.name == "employee_id" for f in model._meta.fields):
+        perm = f"{model._meta.app_label}.view_{model._meta.model_name}"
     export_objects = filter_class(request.GET).qs
+    # What a request may select by id: the scoped set, not the whole model.
+    selectable_objects = model.objects.all()
     if perm:
         export_objects = filtersubordinates(request, export_objects, perm)
+        selectable_objects = filtersubordinates(request, selectable_objects, perm)
 
     # If the caller selected specific rows in the list view (instance_ids),
     # export exactly those - not whatever the filter fields happen to match -
@@ -1164,7 +1213,7 @@ def export_data(request, model, form_class, filter_class, file_name, perm=None):
         with contextlib.suppress(ValueError, SyntaxError):
             instance_ids = ast.literal_eval(instance_ids)
             if instance_ids:
-                export_objects = model.objects.filter(pk__in=instance_ids)
+                export_objects = selectable_objects.filter(pk__in=instance_ids)
                 has_instance_ids = True
 
     selected_fields = request.GET.getlist("selected_fields")
@@ -1174,13 +1223,34 @@ def export_data(request, model, form_class, filter_class, file_name, perm=None):
         if not has_instance_ids:
             ids = request.GET.get("ids", "[]")
             id_list = json.loads(ids)
-            export_objects = model.objects.filter(id__in=id_list)
+            export_objects = selectable_objects.filter(id__in=id_list)
 
-    for field in form.fields["selected_fields"].choices:
-        value = field[0]
-        key = field[1]
-        if value in selected_fields:
-            selected_columns.append((value, key))
+    choices_map = dict(form.fields["selected_fields"].choices)
+    for value in selected_fields:
+        if value in choices_map:
+            selected_columns.append((value, choices_map[value]))
+
+    select_related_paths = set()
+    for field_name in selected_fields:
+        parts = field_name.split("__")
+        relation_parts = parts[:-1] if len(parts) > 1 else parts
+        valid_parts = []
+        current_model = model
+        for part in relation_parts:
+            try:
+                field = current_model._meta.get_field(part)
+            except FieldDoesNotExist:
+                valid_parts = []
+                break
+            if not field.is_relation:
+                valid_parts = []
+                break
+            valid_parts.append(part)
+            current_model = field.related_model
+        if valid_parts:
+            select_related_paths.add("__".join(valid_parts))
+    if select_related_paths:
+        export_objects = export_objects.select_related(*select_related_paths)
 
     for field_name, verbose_name in selected_columns:
         if field_name in selected_fields:
@@ -1204,7 +1274,7 @@ def export_data(request, model, form_class, filter_class, file_name, perm=None):
                     value = _(value.title())
 
                 # Check if the type of 'value' is time
-                value = format_export_value(value, employee)
+                value = format_export_value(value, time_format, date_format)
                 # Employee-entered text reaching a spreadsheet cell can
                 # execute when the file is opened (=HYPERLINK(...) will
                 # exfiltrate neighbouring cells), so guard every value at the
@@ -1692,6 +1762,18 @@ def get_next_month_same_date(date_obj):
     day = date_copy.day
     total_days_in_month = calendar.monthrange(year, month)[1]
     day = min(day, total_days_in_month)
+    return date(day=day, month=month, year=year)
+
+
+def get_nth_month_same_date(start_date, months):
+    """
+    Date `months` months after `start_date`, keeping the start day where the
+    month has it and clamping to the month's last day where it does not.
+    """
+    month_index = start_date.month - 1 + months
+    year = start_date.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start_date.day, calendar.monthrange(year, month)[1])
     return date(day=day, month=month, year=year)
 
 

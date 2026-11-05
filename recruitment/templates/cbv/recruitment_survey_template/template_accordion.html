@@ -1,4 +1,11 @@
 {% load i18n static %}
+<style>
+    #{{ view_id }} .survey-template-head .fixed-table th,
+    #{{ view_id }} .survey-template-head .fixed-table td {
+        border: none;
+        border-radius: 0;
+    }
+</style>
 <div id="{{ view_id }}">
     <button
         class="reload-record"
@@ -76,17 +83,8 @@
             </div>
         {% endif %}
 
-        {% comment %}
-        One column header shared by every template's own question table below,
-        instead of each expanded accordion repeating its own -- matches the
-        performance detail page standard (e.g. pms/okr/emp_objective/
-        emp_objective_list.html). The per-group tables drop their own
-        <thead> and share this same colgroup, so columns stay aligned across
-        all of them. px-2 matches the px-2 each group's own table wrapper
-        uses below -- without it the two tables measure at different widths
-        and every column past the first drifts out of alignment.
-        {% endcomment %}
-        <div class="bg-white border border-[#EAE8E3] rounded-lg mb-1.5 overflow-hidden px-2">
+
+        <div class="survey-template-head bg-white border border-[#EAE8E3] rounded-lg mb-1.5 overflow-hidden px-2">
             <table class="fixed-table w-full table-fixed border-separate">
                 <colgroup>
                     <col>
@@ -107,26 +105,17 @@
 
         <div class="accordion-wrapper space-y-1.5">
             {% for instance in queryset %}
-                {% comment %}
-                No overflow-hidden on the card itself -- the Actions dropdown
-                below is absolutely positioned and needs to pop out past the
-                header's own bottom edge while the accordion is still
-                collapsed (just the header's height), which overflow-hidden
-                here would clip. rounded-t-lg on the header gives the same
-                rounded-corner look when collapsed; the table wrapper below
-                gets its own rounded-b-lg overflow-hidden for the bottom
-                corners instead.
-                {% endcomment %}
+
                 <div class="oh-accordion bg-white border border-[#EAE8E3] rounded-lg">
                     <div class="oh-accordion-item">
                         <div class="oh-accordion-header no-after rounded-t-lg w-full flex justify-between items-center px-3.5 py-2 transition-colors">
                             <div class="flex items-center gap-2.5">
                                 <span
                                     class="inline-flex items-center justify-center rounded-full font-semibold min-w-[22px] h-[22px] px-1.5 text-[11px] bg-primary-600 text-white"
-                                    title="{{ instance.recruitmentsurvey_set.count }} {% trans 'Questions' %}"
+                                    title="{{ instance.questions.count }} {% trans 'Questions' %}"
                                     onclick="event.stopPropagation()"
                                 >
-                                    {{ instance.recruitmentsurvey_set.count }}
+                                    {{ instance.questions.count }}
                                 </span>
                                 <span class="text-[13.5px] font-semibold text-gray-700">{{ instance.title }}</span>
                             </div>
@@ -164,19 +153,6 @@
                                             {% if perms.recruitment.change_surveytemplate %}
                                                 <li>
                                                     <a
-                                                        hx-get="{% url 'survey-template-question-add' %}?title={{ instance.title }}"
-                                                        hx-target="#genericModalBody"
-                                                        data-toggle="oh-modal-toggle"
-                                                        data-target="#genericModal"
-                                                        class="block w-full text-left px-3 py-1 text-[#333] hover:text-primary-600 transition duration-300 cursor-pointer"
-                                                    >
-                                                        {% trans "Add Questions" %}
-                                                    </a>
-                                                </li>
-                                            {% endif %}
-                                            {% if perms.recruitment.change_surveytemplate %}
-                                                <li>
-                                                    <a
                                                         hx-get="{% url 'survey-template-create' %}?title={{ instance.title }}"
                                                         hx-target="#genericModalBody"
                                                         data-toggle="oh-modal-toggle"
@@ -184,6 +160,19 @@
                                                         class="block w-full text-left px-3 py-1 text-[#333] hover:text-primary-600 transition duration-300 cursor-pointer"
                                                     >
                                                         {% trans "Edit" %}
+                                                    </a>
+                                                </li>
+                                            {% endif %}
+                                            {% if perms.recruitment.add_surveytemplate %}
+                                                <li>
+                                                    <a
+                                                        hx-get="{% url 'survey-template-duplicate' instance.pk %}"
+                                                        hx-target="#genericModalBody"
+                                                        data-toggle="oh-modal-toggle"
+                                                        data-target="#genericModal"
+                                                        class="block w-full text-left px-3 py-1 text-[#333] hover:text-primary-600 transition duration-300 cursor-pointer"
+                                                    >
+                                                        {% trans "Duplicate" %}
                                                     </a>
                                                 </li>
                                             {% endif %}
@@ -207,7 +196,7 @@
                             </div>
                         </div>
                         <div class="oh-accordion-body d-none">
-                            {% with questions=instance.recruitmentsurvey_set.all %}
+                            {% with questions=instance.questions.all %}
                                 {% if questions %}
                                     <div class="px-2 rounded-b-lg overflow-hidden">
                                     <table class="fixed-table w-full table-fixed border-separate">

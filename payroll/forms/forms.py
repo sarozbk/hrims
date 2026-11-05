@@ -146,6 +146,7 @@ class ContractForm(ModelForm):
         self.fields["contract_status"].widget.attrs.update(
             {
                 "class": "oh-select",
+                "form": "contractForm",
             }
         )
         if self.instance and self.instance.pk:
@@ -154,6 +155,7 @@ class ContractForm(ModelForm):
                 {
                     "hx-target": "this",
                     "hx-post": dynamic_url,
+                    "hx-include": "#contractForm",
                     "hx-swap": "beforebegin",
                 }
             )
@@ -278,7 +280,7 @@ class ContractForm(ModelForm):
         """
         Render the url for contract status update through hx request
         """
-        return f"/payroll/update-contract-status/{instance.pk}"
+        return f"/payroll/update-contract-status/{instance.pk}/"
 
 
 class ReimbursementRequestCommentForm(ModelForm):
@@ -399,6 +401,26 @@ class EncashmentEligibilityForm(ModelForm):
         # it (an untouched BooleanField would post nothing and Django would
         # read that as False).
         fields = ["employees", "department", "job_position"]
+
+    def clean(self):
+        cleaned_data = super().clean()
+        # is_applicable_to_all isn't a field on this form (see the Meta
+        # comment above) -- its current value already sits on self.instance,
+        # saved independently by the other toggle before this form is ever
+        # submitted.
+        if not self.instance.is_applicable_to_all:
+            employees = cleaned_data.get("employees")
+            department = cleaned_data.get("department")
+            job_position = cleaned_data.get("job_position")
+            if not employees and not department and not job_position:
+                message = _(
+                    "Select at least one of Employees, Department or Job "
+                    "Position when Apply to all employees is disabled."
+                )
+                self.add_error("employees", message)
+                self.add_error("department", message)
+                self.add_error("job_position", message)
+        return cleaned_data
 
 
 class DashboardExport(Form):

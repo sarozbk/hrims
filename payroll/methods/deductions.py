@@ -4,6 +4,7 @@ deductions.py
 This module is used to compute the deductions of employees
 """
 
+from payroll.methods.component_engine import own_structure_only
 from payroll.models.models import Deduction
 
 
@@ -17,12 +18,19 @@ def update_compensation_deduction(
         compensation_amount (_type_): Gross pay or Basic pay or employee
     """
     deduction_heads = (
-        Deduction.objects.filter(
-            update_compensation=compensation_type, specific_employees=employee
+        own_structure_only(
+            Deduction.objects.filter(
+                update_compensation=compensation_type, specific_employees=employee
+            ),
+            Deduction,
+            employee,
         )
         .exclude(one_time_date__lt=start_date)
         .exclude(one_time_date__gt=end_date)
         # .exclude(exclude_employees=employee)
+        # Each rate is taken from what the earlier ones left, so the order
+        # changes the amounts: (sequence, pk), as the payslip gatherers do.
+        .order_by("sequence", "pk")
     )
     deductions = []
     temp = compensation_amount
@@ -82,7 +90,8 @@ def create_deductions(instance, amount, date):
     # the model defaults happen to be. Those defaults made every repayment
     # pre-tax and calendar-day prorated, which nobody chose and nothing said.
     for field, value in policy_fields(
-        LOAN_REPAYMENT_KEYS.get(instance.type, "loan_repayment")
+        LOAN_REPAYMENT_KEYS.get(instance.type, "loan_repayment"),
+        employee=instance.employee_id,
     ).items():
         setattr(installment, field, value)
 

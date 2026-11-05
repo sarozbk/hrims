@@ -92,8 +92,11 @@ def _punch_block(employee, activities):
 
 def _geofence_block(employee):
     """Config only. The client sends coordinates and the punch endpoint rules."""
+    from geofencing.models import GeoFencing
+
     company = employee.get_company()
-    fence = getattr(company, "geo_fencing", None) if company else None
+    # the company's own fence, else the global one
+    fence = GeoFencing.for_company(company) if company else None
     if fence is None or not fence.start:
         return {"enabled": False}
     return {
@@ -111,7 +114,9 @@ def _on_leave_today(employee):
     today = date.today()
     requests = (
         LeaveRequest.objects.filter(
-            status="approved", start_date__lte=today, end_date__gte=today
+            status__in=["approved", "cancel_requested"],
+            start_date__lte=today,
+            end_date__gte=today,
         )
         .select_related("employee_id")
         .exclude(employee_id=employee)[:10]

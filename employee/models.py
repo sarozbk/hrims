@@ -325,7 +325,9 @@ class Employee(models.Model):
         )
         status = _("Expected working")
         if leaves_requests.exists():
-            if leaves_requests.filter(status="approved").exists():
+            if leaves_requests.filter(
+                status__in=["approved", "cancel_requested"]
+            ).exists():
                 status = _("On Leave")
             elif leaves_requests.filter(status="requested"):
                 status = _("Waiting Approval")
@@ -1219,6 +1221,22 @@ class PolicyMultipleFile(HorillaModel):
         return self._attachment_name.endswith(
             (".png", ".jpg", ".jpeg", ".gif", ".webp")
         )
+
+    @property
+    def icon_class(self):
+        """Modifier for ``oh-file-icon`` so each file type gets its own icon."""
+        name = self._attachment_name
+        if name.endswith(".pdf"):
+            return "oh-file-icon--pdf"
+        if self.is_image or name.endswith(".svg"):
+            return "oh-file-icon--image"
+        if name.endswith((".xls", ".xlsx", ".xlsm", ".csv")):
+            return "oh-file-icon--excel"
+        if name.endswith((".doc", ".docx")):
+            return "oh-file-icon--word"
+        if name.endswith((".ppt", ".pptx")):
+            return "oh-file-icon--powerpoint"
+        return "oh-file-icon--default"
 
 
 class Policy(HorillaModel):

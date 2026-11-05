@@ -221,17 +221,16 @@ def rotate_shift():
     rotating_shifts = RotatingShiftAssign.objects.filter(is_active=True)
     today = datetime.now().date()
     r_shifts = rotating_shifts.filter(start_date__lte=today)
-    rotating_shifts_modified = None
     for r_shift in r_shifts:
         emp_shift = rotating_shifts.filter(
             employee_id=r_shift.employee_id, start_date__lte=today
         ).exclude(id=r_shift.id)
-        rotating_shifts_modified = rotating_shifts.exclude(
-            id__in=emp_shift.values_list("id", flat=True)
-        )
         emp_shift.update(is_active=False)
 
-    for rotating_shift in rotating_shifts_modified:
+    # Re-read the active assignments: the superseded ones were just
+    # deactivated. (A variable only set inside the loop above left nothing to
+    # iterate when no assignment had started, raising TypeError every run.)
+    for rotating_shift in rotating_shifts:
         based_on = rotating_shift.based_on
         # after day condition
         if based_on == "after":
@@ -450,6 +449,55 @@ def sync_roster_shifts():
             pass
 
 
+def clear_expired_sessions():
+    """
+    Delete expired sessions. Django keeps them until `clearsessions` runs, and
+    nothing ran it, so the session table only grew: an expired session can
+    never be used again, but its row (and the user id in it) stayed for good.
+    """
+    from importlib import import_module
+
+    from django.conf import settings
+    from django.utils import timezone
+
+    store = import_module(settings.SESSION_ENGINE).SessionStore
+    # Database-backed engines (db, cached_db) can say how many rows go;
+    # cache and cookie engines expire sessions by themselves.
+    model = store.get_model_class() if hasattr(store, "get_model_class") else None
+    expired = (
+        model.objects.filter(expire_date__lt=timezone.now()).count() if model else None
+    )
+    try:
+        store.clear_expired()
+    except NotImplementedError:
+        logger.info(
+            "Session engine %s cannot clear expired sessions",
+            settings.SESSION_ENGINE,
+        )
+        return
+    if model:
+        logger.info("Cleared %s expired sessions", expired)
+
+
+def trim_scheduler_history():
+    """
+    Delete scheduler job-run history older than HORILLA_SCHEDULER_HISTORY_DAYS.
+    django_apscheduler records a row for every run of every job and never
+    removes them, so with jobs that run every minute the table grows by
+    thousands of rows a day.
+    """
+    from django.conf import settings
+    from django.utils import timezone
+    from django_apscheduler.models import DjangoJobExecution
+
+    # At least a day: 0 or a negative value would delete the whole history
+    # at every run (the cutoff would be now or later).
+    days = max(getattr(settings, "HORILLA_SCHEDULER_HISTORY_DAYS", 7), 1)
+    cutoff = timezone.now() - timedelta(days=days)
+    deleted, _ = DjangoJobExecution.objects.filter(run_time__lte=cutoff).delete()
+    logger.info("Deleted %s scheduler job runs older than %s days", deleted, days)
+
+
 # The job1..job6 ids are historical and deliberately preserved so existing
 # jobstore rows are replaced rather than duplicated. Note job5/job6 are swapped
 # relative to declaration order -- that is how they have always been persisted.
@@ -463,3 +511,19 @@ register_job(undo_work_type, "interval", job_id="job6", hours=4)
 register_job(switch_work_type, "interval", job_id="job5", hours=4)
 register_job(recurring_holiday, "interval", hours=4)
 register_job(sync_roster_shifts, "interval", hours=4)
+register_job(
+    clear_expired_sessions,
+    "cron",
+    job_id="clear_expired_sessions",
+    hour=3,
+    minute=0,
+    misfire_grace_time=3600 * 6,
+)
+register_job(
+    trim_scheduler_history,
+    "cron",
+    job_id="trim_scheduler_history",
+    hour=3,
+    minute=15,
+    misfire_grace_time=3600 * 6,
+)

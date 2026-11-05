@@ -25,6 +25,11 @@ urlpatterns = [
         feedback.PerformanceTab.as_view(),
         name="individual-performance-tab-list",
     ),
+    path(
+        "individual-key-result-tab-list/<int:pk>/",
+        objectives.EKRTab.as_view(),
+        name="individual-key-result-tab-list",
+    ),
     path("feedback-view/", feedback.FeedbackViewPage.as_view(), name="feedback-view"),
     path(
         "feedback-list-page/",
@@ -792,6 +797,26 @@ urlpatterns = [
         "nav-question-template/",
         question_template.QuestionTemplateNav.as_view(),
         name="nav-question-template",
+    ),
+    path(
+        "question-list-nav/<int:template_id>/",
+        question_template.QuestionListNav.as_view(),
+        name="question-list-nav",
+    ),
+    path(
+        "question-list-view/<int:template_id>/",
+        question_template.QuestionListView.as_view(),
+        name="question-list-view",
+    ),
+    path(
+        "question-form-create/<int:template_id>/",
+        question_template.QuestionFormView.as_view(),
+        name="question-form-create",
+    ),
+    path(
+        "question-form-update/<int:pk>/",
+        question_template.QuestionFormView.as_view(),
+        name="question-form-update",
     ),
     path(
         "period-view/",

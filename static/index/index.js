@@ -110,29 +110,53 @@ function addToSelectedId(newIds, storeKey) {
     setStoredSelection(storeKey, ids);
 }
 
-/**
- * Select-all helper used by list toolbars. Prefer data-select-ids on the
- * button so huge id lists are not inlined as fragile onclick JS.
- */
 function hlvSelectAllRecords(btn, viewSelector, storeKey) {
     storeKey = storeKey || "selectedInstances";
-    var ids = [];
-    try {
-        ids = JSON.parse($(btn).attr("data-select-ids") || "[]");
-    } catch (e) {
-        ids = [];
+    var $btn = $(btn);
+
+    function applySelection(ids) {
+        addToSelectedId(ids, storeKey);
+        selectSelected(viewSelector, storeKey);
+        var viewId = (viewSelector || "").replace(/^#/, "");
+        reloadSelectedCount($(`#count_${viewId}`), storeKey);
+        reloadSelectedCount($(`.count_${viewId}`), storeKey);
+        // Nested accordion panels lock max-height after the first load — grow
+        // them so Unselect / Export chrome that appears after Select stays visible.
+        var $panel = $(viewSelector).closest(".accordion-panel");
+        if ($panel.length && $panel[0].style.maxHeight) {
+            $panel[0].style.maxHeight = $panel[0].scrollHeight + "px";
+        }
     }
-    addToSelectedId(ids, storeKey);
-    selectSelected(viewSelector, storeKey);
-    var viewId = (viewSelector || "").replace(/^#/, "");
-    reloadSelectedCount($(`#count_${viewId}`), storeKey);
-    reloadSelectedCount($(`.count_${viewId}`), storeKey);
-    // Nested accordion panels lock max-height after the first load — grow
-    // them so Unselect / Export chrome that appears after Select stays visible.
-    var $panel = $(viewSelector).closest(".accordion-panel");
-    if ($panel.length && $panel[0].style.maxHeight) {
-        $panel[0].style.maxHeight = $panel[0].scrollHeight + "px";
+
+    var inlineIds = $btn.attr("data-select-ids");
+    if (inlineIds !== undefined) {
+        var ids = [];
+        try {
+            ids = JSON.parse(inlineIds || "[]");
+        } catch (e) {
+            ids = [];
+        }
+        applySelection(ids);
+        return;
     }
+
+    var selectUrl = $btn.attr("data-select-url");
+    if (!selectUrl || $btn.prop("disabled")) return;
+    var url = new URL(selectUrl, window.location.origin);
+    url.searchParams.set("select_all", "true");
+    $btn.prop("disabled", true);
+    $.ajax({
+        url: url.pathname + url.search,
+        dataType: "json",
+        headers: { "HX-Request": "true" },
+    })
+        .done(applySelection)
+        .fail(function () {
+            console.error(i18nMessages.loadFailed);
+        })
+        .always(function () {
+            $btn.prop("disabled", false);
+        });
 }
 
 /**
@@ -172,6 +196,49 @@ function hlvUnselectRecords(btn, viewSelector, storeKey) {
     var viewId = (viewSelector || "").replace(/^#/, "");
     reloadSelectedCount($(`#count_${viewId}`), storeKey);
     reloadSelectedCount($(`.count_${viewId}`), storeKey);
+}
+
+/**
+ * Select-all checkbox in a group's header (.hlv-group-select): selects (or
+ * drops) every record of that group -- all its pages, loaded or not -- in the
+ * shared selection, leaving the other groups' selection alone.
+ */
+function hlvToggleGroupSelect(cb, viewSelector, storeKey) {
+    storeKey = storeKey || "selectedInstances";
+    if (cb.checked) {
+        addToSelectedId($(cb).attr("data-select-ids"), storeKey);
+        selectSelected(viewSelector, storeKey);
+        var viewId = (viewSelector || "").replace(/^#/, "");
+        reloadSelectedCount($(`#count_${viewId}`), storeKey);
+        reloadSelectedCount($(`.count_${viewId}`), storeKey);
+    } else {
+        hlvUnselectRecords(cb, viewSelector, storeKey);
+    }
+    hlvSyncGroupSelectBoxes(storeKey);
+}
+
+// Group header checkboxes mirror the selection: checked when every record of
+// the group is selected, indeterminate when only some are.
+function hlvSyncGroupSelectBoxes(storeKey) {
+    storeKey = storeKey || "selectedInstances";
+    var $boxes = $(".hlv-group-select");
+    if (!$boxes.length) return;
+    var selected = new Set(
+        JSON.parse(ensureSelectionStore(storeKey).attr("data-ids") || "[]").map(String)
+    );
+    $boxes.each(function () {
+        if ((this.getAttribute("data-store-key") || "selectedInstances") !== storeKey) return;
+        var ids = [];
+        try {
+            ids = JSON.parse(this.getAttribute("data-select-ids") || "[]");
+        } catch (e) {}
+        var n = 0;
+        ids.forEach(function (id) {
+            if (selected.has(String(id))) n++;
+        });
+        this.checked = ids.length > 0 && n === ids.length;
+        this.indeterminate = n > 0 && n < ids.length;
+    });
 }
 
 // Used by the "Unselect"/"Unselect All Records" actions so the clear is
@@ -323,25 +390,6 @@ function togglePublicComments() {
     } else {
         $('#id_public_comments_parent_div').show();
     }
-}
-
-function attendanceDateChange(selectElement) {
-    var selectedDate = selectElement.val();
-    let parentForm = selectElement.parents().closest("form");
-    var shiftId = parentForm.find("[name=shift_id]").val();
-
-    $.ajax({
-        type: "post",
-        url: "/attendance/update-date-details/",
-        data: {
-            csrfmiddlewaretoken: getCookie("csrftoken"),
-            attendance_date: selectedDate,
-            shift_id: shiftId,
-        },
-        success: function (response) {
-            parentForm.find("[name=minimum_hour]").val(response.minimum_hour);
-        },
-    });
 }
 
 function getAssignedLeave(employeeElement) {
@@ -701,6 +749,7 @@ function highlightRow(checkbox) {
 }
 
 function reloadSelectedCount(targetElement, storeKey = "selectedInstances") {
+    hlvSyncGroupSelectBoxes(storeKey);
     var count = JSON.parse(
         ensureSelectionStore(storeKey).attr("data-ids") || "[]"
     ).length;
@@ -1674,33 +1723,20 @@ $(document).on("click", function (event) {
 });
 
 $(document).on("htmx:afterSwap", function () {
-    // Only initialize elements that aren't already a live Summernote editor.
-    // Re-calling .summernote(options) on one that already is can leave the
-    // original textarea visible again alongside the rich editor UI (see
-    // initializeSummernote() below, which guards the same way for the same
-    // reason) -- this handler fires on EVERY htmx swap anywhere on the page,
-    // so a modal reopened more than once was hitting this repeatedly.
     $("[data-summernote]").each(function () {
         var $source = $(this);
+        // Skip editors that are already initialized.
         if ($source.next(".note-editor").length > 0) {
             return;
         }
-        // Summernote hides the field it is attached to. The browser cannot
-        // focus a hidden control to report a constraint violation, so a
-        // `required` one aborts the whole submit ("An invalid form control
-        // ... is not focusable") — no submit event, no request, and the Save
-        // button appears dead. Leave the required check to the server, which
-        // renders its error inline under the field.
+        // Hidden required fields block form submit; the server validates instead.
         this.removeAttribute("required");
         $source.summernote({
-            height: 300,
+            height: 200,
             codeviewFilter: false,
             codeviewIframeFilter: false,
             callbacks: {
                 onChange: function (contents) {
-                    // Write back to the edited field itself — targeting
-                    // [name="body"] pushed the text into an unrelated field
-                    // whenever the editor was attached to anything else.
                     $source.val(contents);
                 },
             },
@@ -1708,13 +1744,7 @@ $(document).on("htmx:afterSwap", function () {
     });
 });
 
-// Global "type '{' for sender/receiver data" mail-body hint, called by
-// send-mail forms (employee, recruitment candidate, etc.) after their own
-// searchWords-aware Summernote init. Previously lived only in the legacy
-// templates/sidebar.html, which the active theme's index.html no longer
-// includes -- every caller's `typeof initializeSummernote === 'function'`
-// check silently failed, so the hint dropdown never appeared even though
-// the base editor (initialized above) still worked.
+// Mail-body "{" hint used by the send-mail forms.
 function preloadData(item, candId, preloadedData, callback) {
     $.ajax({
         type: "get",
@@ -1732,18 +1762,11 @@ function initializeSummernote(candId, searchWords) {
     var preloadedData = {};
     var mentions = Object.keys(searchWords);
     var $body = $("[name='body']");
-    // A caller invoked more than once for the same open (e.g. a stale,
-    // re-accumulated event listener) would otherwise re-call .summernote()
-    // on an already-live editor, which can leave the source textarea
-    // visible again alongside the rich editor UI. Destroy any existing
-    // instance first so exactly one clean editor (with hint) results
-    // regardless of how many times this runs.
+    // Destroy any existing editor so repeated calls leave exactly one.
     if ($body.next(".note-editor").length > 0) {
         $body.summernote("destroy");
     }
-    // Same hidden-required trap as the [data-summernote] init above: the
-    // browser cannot report a violation on the hidden source field, so a
-    // `required` mail body silently blocks the whole form submit.
+    // Hidden required fields block form submit; the server validates instead.
     $body.each(function () {
         this.removeAttribute("required");
     });
@@ -2052,7 +2075,7 @@ function hlvShowBulkDeleteSummary(r, kind) {
             warnings: m.approveOtWarnings || "Approve OT Completed with Warnings",
             success: m.approveOtSuccessful || "Approve OT Successful",
             none: m.noneOtApproved || "Nothing was approved. The overtime was already approved or can't be approved by you.",
-            some: m.someOtNotApproved || "Some attendances were skipped (overtime already approved, or your own).",
+            some: m.someOtNotApproved || "Some attendances were skipped (overtime already approved).",
             all: m.allOtApproved || "Overtime was approved for all selected attendances.",
             done: m.approved || "Approved",
         },
@@ -2060,8 +2083,8 @@ function hlvShowBulkDeleteSummary(r, kind) {
             result: m.validateResult || "Validate Result",
             warnings: m.validateWarnings || "Validate Completed with Warnings",
             success: m.validateSuccessful || "Validate Successful",
-            none: m.noneValidated || "Nothing was validated. They have a pending update request or can't be validated by you.",
-            some: m.someNotValidated || "Some attendances were skipped (pending update request, or your own).",
+            none: m.noneValidated || "Nothing was validated. They have a pending update request or can't be validated.",
+            some: m.someNotValidated || "Some attendances were skipped (pending update request).",
             all: m.allValidated || "All selected attendances were validated.",
             done: m.validated || "Validated",
         },
@@ -2124,6 +2147,7 @@ function hlvShowBulkDeleteSummary(r, kind) {
         title: title,
         icon: icon,
         width: "24rem",
+        customClass: { icon: "oh-hlv-result-icon" },
         html:
             '<p style="color:#6b7280;font-size:13px;margin:0">' + text + "</p>" +
             '<div style="display:flex;gap:8px;margin-top:12px">' +
@@ -2182,6 +2206,795 @@ function hlvBulkDeleteFinish(model, ids, done) {
     });
 }
 
+
+// ---------------------------------------------------------------------------
+// Export progress.
+//
+// Every export in the project (the export forms, the exports fetched through
+// $.ajax as a blob, and the odd direct download link) gets the same
+// "Exporting..." dialog, so the user can see something is happening while the
+// file is built. Export forms submit natively, so completion is signalled by
+// the server: ExportDownloadCookieMiddleware echoes the request's
+// `hlv_export_token` back in the `hlv_export_done` cookie once the response is
+// a file. Blob requests simply finish with their ajax call.
+// ---------------------------------------------------------------------------
+var HLV_EXPORT_PATH = /export/i;
+var hlvExportTimer = null;
+
+function hlvExportText(msgid, fallback) {
+    return typeof gettext === "function" ? gettext(msgid) : fallback;
+}
+
+function hlvReadCookie(name) {
+    var match = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+    return match ? decodeURIComponent(match[1]) : null;
+}
+
+// Export forms and links download into a hidden iframe, so the page stays put
+// and an error page the server answers with can be told apart from a file: a
+// file never fires the iframe's load event (the cookie reports it instead), an
+// HTML response does.
+var hlvExportFrame = null;
+var hlvExportPending = false;
+
+function hlvExportFrameEl() {
+    if (!hlvExportFrame && document.body) {
+        var frame = document.createElement("iframe");
+        frame.name = "hlvExportFrame";
+        frame.setAttribute("aria-hidden", "true");
+        frame.style.display = "none";
+        frame.addEventListener("load", function () {
+            if (!hlvExportPending) return;
+            var doc = null;
+            try {
+                doc = frame.contentDocument;
+            } catch (err) {
+                doc = null;
+            }
+            if (!doc || !doc.location || doc.location.href === "about:blank") return;
+            // A PDF shown inline is still a file; the cookie reports it.
+            if (/pdf/i.test(doc.contentType || "")) return;
+            var alert = doc.querySelector(".oh-alert-container .oh-alert, .oh-alert");
+            var text = alert && alert.textContent.replace(/\s+/g, " ").trim();
+            hlvExportFinish();
+            hlvExportResult(false, text);
+        });
+        document.body.appendChild(frame);
+        hlvExportFrame = frame;
+    }
+    return hlvExportFrame;
+}
+$(hlvExportFrameEl);
+
+// The result dialog, laid out like the bulk delete one. `text` is the reason
+// shown on failure (a generic one when the server gave none).
+function hlvExportResult(ok, text) {
+    if (typeof Swal === "undefined") return;
+    var m = hlvMessages();
+    Swal.fire({
+        title: ok
+            ? m.exportSuccessful || hlvExportText("Export Successful", "Export Successful")
+            : m.exportFailed || hlvExportText("Export Failed", "Export Failed"),
+        icon: ok ? "success" : "error",
+        width: "24rem",
+        customClass: { icon: "oh-hlv-result-icon" },
+        html:
+            '<p style="color:#6b7280;font-size:13px;margin:0">' +
+            hlvEscape(
+                text ||
+                    (ok
+                        ? hlvExportText("Your file has been exported.", "Your file has been exported.")
+                        : hlvExportText("The export failed. Please try again.", "The export failed. Please try again."))
+            ) +
+            "</p>",
+        confirmButtonText: m.close || "Close",
+    });
+}
+
+function hlvExportFinish() {
+    if (hlvExportTimer) {
+        clearInterval(hlvExportTimer);
+        hlvExportTimer = null;
+    }
+    hlvExportPending = false;
+    document.cookie = "hlv_export_done=; Max-Age=0; path=/";
+    if (typeof Swal !== "undefined") {
+        var popup = Swal.getPopup && Swal.getPopup();
+        if (popup && popup.classList.contains("hlv-export-popup")) Swal.close();
+    }
+}
+
+// token: the value the server will echo back, or null when the caller ends the
+// dialog itself (ajax). The dialog also gives up after three minutes.
+function hlvExportStart(token) {
+    if (typeof Swal === "undefined") return;
+    hlvExportFinish();
+    Swal.fire({
+        title: hlvExportText("Exporting data", "Exporting data"),
+        width: "24rem",
+        customClass: { popup: "hlv-export-popup" },
+        html:
+            '<style>@keyframes hlvSlide{0%{margin-left:-40%}100%{margin-left:100%}}</style>' +
+            '<div style="margin:0 0 6px;color:#6b7280;font-size:13px">' +
+            hlvExportText("Preparing your file, please wait...", "Preparing your file, please wait...") +
+            "</div>" +
+            '<div style="height:6px;border-radius:6px;background:#eceef2;overflow:hidden;margin-bottom:18px">' +
+            '<div style="width:40%;height:100%;border-radius:6px;background:#e54f38;animation:hlvSlide 1.1s ease-in-out infinite"></div></div>',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        showConfirmButton: false,
+    });
+    hlvExportPending = !!token;
+    var started = Date.now();
+    hlvExportTimer = setInterval(function () {
+        var done = token && hlvReadCookie("hlv_export_done") === token;
+        if (done || Date.now() - started > 180000) hlvExportFinish();
+        if (done) hlvExportResult(true);
+    }, 300);
+}
+
+function hlvExportToken() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+// For links / buttons that navigate straight to an export URL.
+function hlvDownloadWithProgress(url) {
+    var token = hlvExportToken();
+    hlvExportStart(token);
+    var target = url + (url.indexOf("?") === -1 ? "?" : "&") + "hlv_export_token=" + token;
+    var frame = hlvExportFrameEl();
+    if (frame) frame.src = target;
+    else window.location.href = target;
+}
+
+// Capture phase, so this runs before inline onsubmit handlers (some of which
+// stop propagation). The token input is only added here; whether the submit
+// goes ahead is known once every handler has run.
+document.addEventListener(
+    "submit",
+    function (e) {
+        var form = e.target;
+        if (!form || form.tagName !== "FORM") return;
+        if (form.hasAttribute("data-hlv-quick")) return;
+        var action = (form.getAttribute("action") || "").split("?")[0];
+        if (!HLV_EXPORT_PATH.test(action)) return;
+        if (form.hasAttribute("hx-post") || form.hasAttribute("hx-get")) return;
+        if (form.target && form.target !== "_self") return;
+        var token = hlvExportToken();
+        var input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "hlv_export_token";
+        input.value = token;
+        form.appendChild(input);
+        // Submit into the hidden iframe; the target goes back once every handler
+        // has had its say (a native submit happens right after this event).
+        var frame = hlvExportFrameEl();
+        var oldTarget = form.getAttribute("target");
+        if (frame) form.setAttribute("target", frame.name);
+        setTimeout(function () {
+            input.remove();
+            if (frame) {
+                if (oldTarget === null) form.removeAttribute("target");
+                else form.setAttribute("target", oldTarget);
+            }
+            if (!e.defaultPrevented) hlvExportStart(token);
+        }, 0);
+    },
+    true
+);
+
+// ---------------------------------------------------------------------------
+// Export options.
+//
+// Every export modal gets a "File name" and a "Format" (Excel / CSV / PDF)
+// field, and the ones that bundle their filters with the column picker lose the
+// filter sections and open the column list. The server side is
+// ExportOptionsMiddleware, which renames / converts whatever file the export
+// view produced, so no view needs to know about these fields.
+// ---------------------------------------------------------------------------
+var HLV_EXPORT_OWN_OPTIONS = "[name=format],[name=export_format],[name=export_file_name],[name=file_name],[name=hlv_export_name]";
+
+function hlvExportOptionsHtml(id) {
+    // box-sizing + an explicit height: a <select> doesn't reliably honor the
+    // same vertical padding as a plain <input> across browsers (its native
+    // widget chrome can ignore it), so identical padding alone leaves it
+    // visibly shorter than the file name field next to it.
+    var field = "width:100%;box-sizing:border-box;height:38px;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;font-size:14px;background:#fff;color:#374151;outline:none;";
+    var label = "display:block;margin-bottom:4px;font-size:13px;color:#6b7280;";
+    return (
+        '<div class="hlv-export-options" style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin:0 0 16px">' +
+        "<div>" +
+        '<label for="' + id + 'Name" style="' + label + '">' + hlvExportText("File name", "File name") + "</label>" +
+        '<input type="text" id="' + id + 'Name" name="hlv_export_name" maxlength="100" autocomplete="off" ' +
+        'placeholder="' + hlvExportText("Leave blank for the default name", "Leave blank for the default name") + '" style="' + field + '">' +
+        "</div><div>" +
+        '<label for="' + id + 'Format" style="' + label + '">' + hlvExportText("Format", "Format") + "</label>" +
+        '<select id="' + id + 'Format" name="hlv_export_format" style="' + field + '">' +
+        '<option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV (.csv)</option><option value="pdf">PDF (.pdf)</option>' +
+        "</select></div></div>"
+    );
+}
+
+var hlvExportFormSeq = 0;
+
+function hlvEnhanceExportForms(forms) {
+    // Idempotent: modal contents are often swapped in after the form itself
+    // exists (and swapped again on reopen), so every pass looks at what is
+    // there now instead of remembering that a form was already handled.
+    $(forms)
+        .each(function () {
+            var form = this;
+            var action = (form.getAttribute("action") || "").split("?")[0];
+            if (!HLV_EXPORT_PATH.test(action)) return;
+            if (form.hasAttribute("hx-post") || form.hasAttribute("hx-get")) return;
+            if (form.target && form.target !== "_self") return;
+            var $form = $(form);
+            var $submit = $form.find("button:not([type=button]), input[type=submit]").last();
+            if (!$submit.length) return;
+            // Forms that already ask for a format / file name (the generic list
+            // export, the report print dialog, ...) keep their own; they still
+            // get the drag-to-reorder handles and hint, just not the injected
+            // options row or the accordion/footer restyling below.
+            if ($form.find(HLV_EXPORT_OWN_OPTIONS).not("[name=hlv_export_name]").length) {
+                hlvAddExportDragHandles(form);
+                hlvInitExportSortable(form);
+                hlvAddExportHint(form);
+                return;
+            }
+
+            // Columns only: drop the filter sections that sit next to the column
+            // picker and open the picker. (Some forms fill the column list in
+            // later, so an accordion with a "select all" box counts too, and
+            // failing that the first one.)
+            var $sections = $form.find(".oh-accordion");
+            var $columns = $sections.filter(function () {
+                return $(this).find("input[name=selected_fields], input[id^=select-all]").length > 0;
+            });
+            if (!$columns.length && $sections.length > 1) $columns = $sections.first();
+            // Filter fields are never shown, so they must not block the submit
+            // (this includes forms that have filters but no column list).
+            if (action.indexOf("work-record") === -1) {
+                $sections.not($columns).each(function () {
+                    $(this).find("[required]").removeAttr("required");
+                });
+            }
+            if ($columns.length && action.indexOf("work-record") === -1) {
+                $sections.not($columns).each(function () {
+                    $(this).hide();
+                });
+                // The column list is all that is left, so show it outright: no
+                // "Excel columns" header to fold it away.
+                $columns.addClass("oh-accordion--show").children(".oh-accordion-header").hide();
+            }
+
+            // Every export ends in the same bottom-right Export button. Some
+            // forms leave it loose (or full width); give it the standard footer
+            // unless it shares a row with inputs of its own.
+            if (!$submit.closest(".oh-dropdown__filter-footer, .oh-modal__dialog-footer").length) {
+                if (!$submit.parent().find("input:not([type=hidden]), select, textarea").length) {
+                    $submit.wrap('<div class="oh-modal__dialog-footer hlv-export-footer"></div>');
+                } else {
+                    $submit.addClass("hlv-export-submit");
+                }
+            }
+
+            // File name + format, above the column list when there is one,
+            // otherwise just above the submit button (once per form content).
+            if ($form.find("[name=hlv_export_name]").length) {
+                hlvAddExportDragHandles(form);
+                hlvInitExportSortable(form);
+                hlvAddExportHint(form);
+                return;
+            }
+            var id = "hlvExport" + ++hlvExportFormSeq;
+            var html = hlvExportOptionsHtml(id);
+            var $body = $form.find(".oh-dropdown__filter-body").first();
+            if ($body.length) {
+                $body.prepend(html);
+            } else if ($sections.length) {
+                // Before everything the form shows, not just before the first section.
+                var $top = $sections.first().parentsUntil($form).last();
+                ($top.length ? $top : $sections.first()).before(html);
+            } else {
+                var $footer = $submit.closest(".oh-dropdown__filter-footer, .oh-modal__dialog-footer");
+                ($footer.length ? $footer : $submit).first().before(html);
+            }
+            hlvAddExportDragHandles(form);
+            hlvInitExportSortable(form);
+            hlvAddExportHint(form);
+        });
+}
+
+function hlvColumnPickerRow(form) {
+    var row = $(form).find(".row").filter(function () {
+        return $(this).find("input[name=selected_fields]").length > 0;
+    }).first();
+    return row.length ? row : null;
+}
+
+// Fields that are selected by default (department, email, ...) belong at the
+// top of the list, ahead of the ones the user would have to opt into. The DOM
+// order of the checked boxes is what gets submitted (and so the column order
+// of the export); the left-hand list keeps its own look through CSS `order`.
+function hlvSortExportFieldsBySelected($row) {
+    var checked = [];
+    var unchecked = [];
+    $row.children().each(function () {
+        var $checkbox = $(this).find("input[name=selected_fields]");
+        if (!$checkbox.length) return;
+        if ($checkbox.is(":checked")) checked.push(this);
+        else unchecked.push(this);
+    });
+    if (checked.length && unchecked.length) {
+        $row.append(checked);
+        $row.append(unchecked);
+    }
+}
+
+function hlvExportItemLabel($input) {
+    return $input.attr("data-label") || $.trim($input.closest("label").text());
+}
+
+// Two panes: the left one picks the fields (checkboxes, original order, with a
+// search box), the right one shows the picked fields in export order and is
+// where they are dragged around. The checkboxes stay the single source of
+// truth: the right list is rebuilt from them, and dragging reorders their DOM
+// order, which is the order the form submits them in.
+function hlvBuildExportSplit(form) {
+    var $row = hlvColumnPickerRow(form);
+    if (!$row) return;
+    // Already built. Do not touch the DOM again: the MutationObserver below
+    // re-runs this on every change, so re-rendering here would loop forever.
+    if ($row.closest(".hlv-export-split").length) return;
+    var $form = $(form);
+    $row.children().each(function (i) {
+        if ($(this).find("input[name=selected_fields]").length) $(this).css("order", i);
+    });
+    hlvSortExportFieldsBySelected($row);
+
+    var $anchor = $form.find("input[id^=select-all]").first().closest(".row");
+    if ($anchor.is($row) || $anchor.find($row).length) $anchor = $();
+    var t = hlvExportText;
+    var $split = $(
+        '<div class="hlv-export-split">' +
+            '<div class="hlv-export-pane hlv-export-pane--left">' +
+                '<div class="hlv-export-pane-head">' +
+                    '<span class="hlv-export-pane-title">' + t("Available fields", "Available fields") + "</span>" +
+                    '<input type="search" class="hlv-export-search" autocomplete="off" placeholder="' +
+                        t("Search fields", "Search fields") + '">' +
+                "</div>" +
+                '<div class="hlv-export-pane-body"></div>' +
+            "</div>" +
+            '<div class="hlv-export-pane hlv-export-pane--right">' +
+                '<div class="hlv-export-pane-head">' +
+                    '<span class="hlv-export-pane-title">' + t("Export order", "Export order") +
+                        ' <span class="hlv-export-count"></span></span>' +
+                    '<button type="button" class="hlv-export-clear">' + t("Clear", "Clear") + "</button>" +
+                "</div>" +
+                '<p class="hlv-export-hint"><ion-icon name="reorder-two-outline"></ion-icon><span>' +
+                    t("Drag the fields to rearrange the column order before exporting", "Drag the fields to rearrange the column order before exporting") +
+                "</span></p>" +
+                '<ul class="hlv-export-list"></ul>' +
+            "</div>" +
+        "</div>"
+    );
+    $split.insertBefore($anchor.length ? $anchor : $row);
+    var $body = $split.find(".hlv-export-pane-body");
+    if ($anchor.length) $body.append($anchor);
+    $body.append($row);
+
+    $split.find(".hlv-export-list").sortable({
+        handle: ".hlv-export-drag-handle",
+        placeholder: "hlv-export-drag-placeholder",
+        tolerance: "pointer",
+        update: function () {
+            var items = $(this).children().map(function () {
+                return $(this).data("item");
+            }).get();
+            $row.prepend(items);
+            hlvRenderExportList(form);
+        },
+    });
+    hlvRenderExportList(form);
+}
+
+function hlvRenderExportList(form) {
+    var $row = hlvColumnPickerRow(form);
+    if (!$row) return;
+    var $list = $(form).find(".hlv-export-list");
+    if (!$list.length) return;
+    $list.empty();
+    var n = 0;
+    $row.children().each(function () {
+        var $item = $(this);
+        var $input = $item.find("input[name=selected_fields]");
+        if (!$input.length || !$input.is(":checked")) return;
+        n += 1;
+        var $li = $(
+            '<li class="hlv-export-list-item">' +
+                '<span class="hlv-export-drag-handle" title="' + hlvExportText("Drag to reorder", "Drag to reorder") +
+                    '"><ion-icon name="reorder-two-outline"></ion-icon></span>' +
+                '<span class="hlv-export-order-badge"></span>' +
+                '<span class="hlv-export-list-label"></span>' +
+                '<button type="button" class="hlv-export-remove" aria-label="' +
+                    hlvExportText("Remove", "Remove") + '"><ion-icon name="close-outline"></ion-icon></button>' +
+            "</li>"
+        );
+        $li.find(".hlv-export-order-badge").text(n);
+        $li.find(".hlv-export-list-label").text(hlvExportItemLabel($input));
+        $li.data("item", this).data("input", $input);
+        $list.append($li);
+    });
+    if (!n) {
+        $list.append(
+            '<li class="hlv-export-empty">' +
+            hlvExportText("No fields selected", "No fields selected") + "</li>"
+        );
+    }
+    $(form).find(".hlv-export-count").text("(" + n + ")");
+}
+
+// Kept so the existing call sites keep working; both are covered by the split.
+function hlvAddExportDragHandles(form) {
+    hlvBuildExportSplit(form);
+}
+function hlvUpdateExportOrder(form) {
+    if (form) hlvRenderExportList(form);
+}
+function hlvInitExportSortable() {}
+function hlvAddExportHint() {}
+
+// A field ticked on the left joins the end of the export order; unticking it
+// (here or with the x on the right) drops it from the list.
+$(document).on("change", "input[name=selected_fields]", function () {
+    var form = this.form;
+    if (!form) return;
+    var $row = hlvColumnPickerRow(form);
+    if ($row && this.checked) {
+        var $item = $row.children().has(this).first();
+        var $last = $row.children().not($item).filter(function () {
+            return $(this).find("input[name=selected_fields]:checked").length > 0;
+        }).last();
+        if ($item.length) {
+            if ($last.length) $item.insertAfter($last);
+            else $row.prepend($item);
+        }
+    }
+    // select-all fires one change per box; render once afterwards.
+    var $form = $(form);
+    clearTimeout($form.data("hlvRenderTimer"));
+    $form.data("hlvRenderTimer", setTimeout(function () {
+        hlvRenderExportList(form);
+    }, 0));
+});
+
+$(document).on("click", ".hlv-export-remove", function () {
+    var $input = $(this).closest("li").data("input");
+    if ($input) $input.prop("checked", false).trigger("change");
+});
+
+$(document).on("click", ".hlv-export-clear", function () {
+    var $form = $(this).closest("form");
+    $form.find("input[id^=select-all]").prop("checked", false);
+    $form.find("input[name=selected_fields]:checked").prop("checked", false).trigger("change");
+});
+
+$(document).on("input", ".hlv-export-search", function () {
+    var q = $.trim(this.value).toLowerCase();
+    var $row = hlvColumnPickerRow($(this).closest("form"));
+    if (!$row) return;
+    $row.children().each(function () {
+        var $input = $(this).find("input[name=selected_fields]");
+        if (!$input.length) return;
+        var show = !q || hlvExportItemLabel($input).toLowerCase().indexOf(q) !== -1;
+        $(this).css("display", show ? "" : "none");
+    });
+});
+
+
+$(document).on("click", "[data-toggle='oh-modal-toggle']", function () {
+    setTimeout(function () {
+        $("form[action*='export' i]").each(function () {
+            hlvAddExportDragHandles(this);
+            hlvInitExportSortable(this);
+            hlvAddExportHint(this);
+        });
+    }, 0);
+});
+
+// Hide the filter sections and the "Excel columns" header from the first paint
+// (the enhancer below also does it, but this needs no script round trip).
+// :has() keeps the column list itself, which is the accordion holding the
+// column checkboxes.
+(function () {
+    var cols = 'input[name="selected_fields"], input[id^="select-all"]';
+    var form = 'form[action*="export" i]';
+    // The work-record export's "Date Range" is the thing being exported, not an
+    // optional filter, so its section is never hidden.
+    var hideForm = form + ':not([action*="work-record"])';
+    var style = document.createElement("style");
+    var picker = ".row:has(input[name=selected_fields])";
+    style.id = "hlv-uniform-export";
+    style.textContent =
+        // filters and the "Excel columns" header go; the column list stays
+        hideForm + " .oh-accordion:not(:has(" + cols + ")){display:none!important}" +
+        hideForm + " .oh-accordion:has(" + cols + ")>.oh-accordion-header{display:none!important}" +
+        hideForm + " .oh-accordion:has(" + cols + ")>.oh-accordion-body{display:block!important}" +
+        // one look for every export modal: same width, three-column picker,
+        // Export button bottom right
+        ".oh-modal__dialog:has(.hlv-export-options):not(:has(.oh-modal__dialog .hlv-export-options)){max-width:980px!important;width:100%}" +
+        form + " " + picker + "{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 16px;margin:0!important}" +
+        form + " " + picker + ">[class*=col-]{width:auto!important;max-width:none!important;flex:none!important;padding:0!important}" +
+        form + " .oh-dropdown__filter-footer," + form + " .oh-modal__dialog-footer{display:flex!important;justify-content:flex-end;padding:0!important;margin:16px 0 0!important;border:0!important}" +
+        form + " .oh-dropdown__filter-footer button:not([type=button])," + form + " .oh-modal__dialog-footer button:not([type=button]){width:auto!important;min-width:110px;margin:0!important}" +
+        form + " button.hlv-export-submit{display:block!important;width:auto!important;min-width:110px;margin:16px 0 0 auto!important}" +
+        "@media (max-width:640px){" + form + " " + picker + "{grid-template-columns:minmax(0,1fr)}" +
+        ".hlv-export-options{grid-template-columns:minmax(0,1fr)!important}}" +
+
+        form + " " + picker + ">div .oh-input-group{display:flex!important;align-items:center;gap:6px;margin:0!important;padding:5px 0}" +
+        // two panes: pick on the left, order on the right
+        ".hlv-export-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin:0 0 4px}" +
+        ".hlv-export-pane{border:1px solid #e5e7eb;border-radius:8px;background:#fff;display:flex;flex-direction:column;min-width:0;height:380px;overflow:hidden}" +
+        ".hlv-export-pane--right{background:#fafafa}" +
+        ".hlv-export-pane-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid #e5e7eb;background:#f9fafb}" +
+        ".hlv-export-pane-title{font-size:13px;font-weight:600;color:#374151;white-space:nowrap}" +
+        ".hlv-export-count{font-weight:500;color:#9ca3af}" +
+        ".hlv-export-search{flex:1;min-width:0;max-width:200px;height:30px;border:1px solid #e5e7eb;border-radius:6px;padding:0 10px;font-size:13px;background:#fff;color:#374151;outline:none}" +
+        ".hlv-export-clear{border:0;background:none;color:#e54f39;font-size:12px;font-weight:600;cursor:pointer;padding:2px 6px}" +
+        ".hlv-export-pane-body{flex:1;overflow-y:auto;padding:4px 12px 8px}" +
+        ".hlv-export-pane-body>.row{margin:0!important}" +
+        form + " .hlv-export-pane--left " + picker + "{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:0 12px!important}" +
+        ".hlv-export-pane-body>.row:has(input[id^=select-all]){border-bottom:1px solid #f3f4f6;margin-bottom:4px!important}" +
+        ".hlv-export-hint{display:flex;align-items:center;gap:6px;margin:0;padding:8px 12px 0;font-size:12px;color:#9ca3af}" +
+        ".hlv-export-hint ion-icon{font-size:14px;flex-shrink:0}" +
+        ".hlv-export-list{list-style:none;margin:0;padding:8px 12px 10px;overflow-y:auto;flex:1}" +
+        ".hlv-export-list-item{display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:6px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;font-size:13px;color:#374151}" +
+        ".hlv-export-list-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+        ".hlv-export-drag-handle{cursor:grab;color:#9ca3af;display:inline-flex;flex-shrink:0}" +
+        ".hlv-export-order-badge{flex-shrink:0;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:#fdeceb;color:#e54f39;font-size:11px;line-height:20px;text-align:center;font-weight:600}" +
+        ".hlv-export-remove{border:0;background:none;color:#9ca3af;cursor:pointer;display:inline-flex;font-size:16px;padding:0}" +
+        ".hlv-export-remove:hover{color:#e54f39}" +
+        ".hlv-export-empty{padding:24px 8px;text-align:center;font-size:13px;color:#9ca3af}" +
+        ".hlv-export-drag-placeholder{height:34px;margin-bottom:6px;border:1px dashed #d1d5db;border-radius:6px;visibility:visible!important}" +
+        ".hlv-export-list-item.ui-sortable-helper{box-shadow:0 2px 8px rgba(0,0,0,.12)}" +
+        "@media (max-width:760px){.hlv-export-split{grid-template-columns:minmax(0,1fr)}.hlv-export-pane{height:300px}}";
+    document.head.appendChild(style);
+})();
+
+// Export forms arrive later (htmx modals, tab content) and are rebuilt when a
+// modal is reopened. A MutationObserver callback runs right after the swap and
+// before the browser paints, so the options are in place before anything shows.
+function hlvExportFormsIn(node) {
+    var found = [];
+    if (node.nodeType !== 1) return found;
+    var own = node.closest && node.closest("form");
+    if (own) found.push(own);
+    if (node.querySelectorAll) found.push.apply(found, node.querySelectorAll("form"));
+    return found;
+}
+$(function () {
+    hlvEnhanceExportForms(document.querySelectorAll("form"));
+    new MutationObserver(function (mutations) {
+        var forms = [];
+        mutations.forEach(function (m) {
+            Array.prototype.forEach.call(m.addedNodes, function (n) {
+                forms.push.apply(forms, hlvExportFormsIn(n));
+            });
+        });
+        if (forms.length) hlvEnhanceExportForms(forms.filter(function (f, i) { return forms.indexOf(f) === i; }));
+    }).observe(document.body, { childList: true, subtree: true });
+});
+
+// ---------------------------------------------------------------------------
+// Quick exports.
+//
+// Many list pages export with a "Do you want to download the excel file?"
+// prompt followed by an ajax request for a blob, and name the downloaded file
+// themselves. Those get the same export dialog as the export modals (file name,
+// format, column picker) without touching each page:
+//   * the prompt is answered automatically (the dialog below replaces it),
+//   * the blob request is first sent with `hlv_export_probe`, which makes
+//     ExportOptionsMiddleware answer with the file's column headings (and keep
+//     the file for a few minutes),
+//   * after the user picks, the same request is repeated with the choices
+//     (`hlv_export_use` picks the kept file up, so the export isn't run twice),
+//   * and the download is saved here, under the chosen name, instead of by the
+//     page's own success handler (which would use its own name and format).
+// Anything the probe can't describe (not an xlsx) runs the old way.
+// ---------------------------------------------------------------------------
+function hlvAddParams(data, extra) {
+    if (typeof data === "string") {
+        return data + (data ? "&" : "") + $.param(extra);
+    }
+    if (typeof FormData !== "undefined" && data instanceof FormData) {
+        var copy = new FormData();
+        data.forEach(function (value, key) { copy.append(key, value); });
+        Object.keys(extra).forEach(function (key) { copy.append(key, extra[key]); });
+        return copy;
+    }
+    return $.extend({}, data, extra);
+}
+
+function hlvEscape(text) {
+    return $("<div>").text(text).html();
+}
+
+function hlvDownloadName(xhr, fallback) {
+    var header = (xhr && xhr.getResponseHeader && xhr.getResponseHeader("Content-Disposition")) || "";
+    var match = header.match(/filename\*=UTF-8''([^;]+)/i) || header.match(/filename="?([^";]+)"?/i);
+    if (!match) return fallback;
+    try {
+        return decodeURIComponent(match[1]);
+    } catch (e) {
+        return match[1];
+    }
+}
+
+function hlvSaveBlob(blob, xhr, fallbackName) {
+    var type = (xhr && xhr.getResponseHeader && xhr.getResponseHeader("Content-Type")) || blob.type;
+    var url = URL.createObjectURL(new Blob([blob], { type: type }));
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = hlvDownloadName(xhr, fallbackName);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+}
+
+// The same markup as the export modals (an .oh-modal with a form), so it sits in
+// the same place and the shared export styling applies. Resolves with
+// {name, format, columns: [positions]} or null when closed.
+function hlvExportDialog(info) {
+    return new Promise(function (resolve) {
+        var id = "hlvQuick" + ++hlvExportFormSeq;
+        var boxes = info.columns
+            .map(function (label, index) {
+                return (
+                    '<div class="col-sm-12 col-md-6 col-lg-4"><div class="oh-input-group"><label class="oh-label">' +
+                    '<input type="checkbox" class="hlv-quick-col" name="selected_fields" value="' + index + '" checked> ' +
+                    hlvEscape(label) + "</label></div></div>"
+                );
+            })
+            .join("");
+        var $modal = $(
+            '<div class="oh-modal oh-modal--show" id="' + id + 'Modal" role="dialog" aria-hidden="false">' +
+            '<div class="oh-modal__dialog">' +
+            '<div class="oh-modal__dialog-header">' +
+            '<h2 class="oh-modal__dialog-title">' + hlvExportText("Export", "Export") + "</h2>" +
+            '<button type="button" class="oh-modal__close" aria-label="' + hlvExportText("Close", "Close") + '"><ion-icon name="close-outline"></ion-icon></button>' +
+            "</div>" +
+            '<div class="oh-modal__dialog-body">' +
+            // data-hlv-quick: never submitted, the handler below takes over
+            '<form action="#export" data-hlv-quick="1">' +
+            hlvExportOptionsHtml(id) +
+            '<div class="row"><div class="col-sm-12 col-md-12 col-lg-12"><div class="oh-input-group"><label class="oh-label">' +
+            '<input type="checkbox" id="select-all-' + id + '" checked> ' + hlvExportText("Select All", "Select All") + "</label></div></div></div>" +
+            '<div class="row">' + boxes + "</div>" +
+            '<div class="oh-dropdown__filter-footer"><button type="submit" class="oh-btn oh-btn--secondary oh-btn--small">' +
+            hlvExportText("Export", "Export") + "</button></div>" +
+            "</form></div></div></div>"
+        );
+        var finish = function (value) {
+            $modal.remove();
+            $(document).off("keydown.hlvQuick");
+            resolve(value);
+        };
+        $modal.find(".oh-modal__close").on("click", function () { finish(null); });
+        $modal.on("mousedown", function (e) { if (e.target === this) finish(null); });
+        $(document).on("keydown.hlvQuick", function (e) { if (e.key === "Escape") finish(null); });
+        $modal.find("#select-all-" + id).on("change", function () {
+            $modal.find(".hlv-quick-col").prop("checked", this.checked);
+        });
+        $modal.find("[name=hlv_export_name]").val(info.filename || "");
+        $modal.find("form").on("submit", function (e) {
+            e.preventDefault();
+            var columns = $modal.find(".hlv-quick-col:checked").map(function () { return parseInt(this.value, 10); }).get();
+            if (!columns.length) {
+                $modal.find("#select-all-" + id).closest(".row").after(
+                    '<p class="hlv-quick-error" style="color:#dc2626;font-size:13px;margin:0 0 8px">' +
+                    hlvExportText("Select at least one column", "Select at least one column") + "</p>"
+                );
+                $modal.find(".hlv-quick-error").slice(1).remove();
+                return;
+            }
+            finish({
+                name: $modal.find("[name=hlv_export_name]").val(),
+                format: $modal.find("[name=hlv_export_format]").val(),
+                columns: columns,
+                all: columns.length === info.columns.length,
+            });
+        });
+        $("body").append($modal);
+    });
+}
+
+function hlvQuickExport(opts) {
+    var base = $.extend({}, opts);
+    delete base.success;
+    delete base.error;
+    delete base.complete;
+    delete base.xhrFields;
+    var plain = function () {
+        // The old behaviour: the page's own handlers, with just the progress dialog.
+        hlvExportStart(null);
+        return hlvNativeAjax.call($, $.extend({}, opts, {
+            __hlvPlain: true,
+            complete: [function (xhr, status) {
+                hlvExportFinish();
+                if (status !== "abort") hlvExportResult(status === "success");
+            }].concat(opts.complete || []),
+        }));
+    };
+    hlvExportStart(null);
+    return hlvNativeAjax
+        .call($, $.extend({}, base, { data: hlvAddParams(opts.data, { hlv_export_probe: 1 }), dataType: "json" }))
+        .then(
+            function (info) {
+                hlvExportFinish();
+                if (!info || !info.columns || !info.columns.length) return plain();
+                return hlvExportDialog(info).then(function (choice) {
+                    if (!choice) return;
+                    hlvExportStart(null);
+                    var extra = {
+                        hlv_export_use: info.token,
+                        hlv_export_name: choice.name,
+                        hlv_export_format: choice.format,
+                    };
+                    if (!choice.all) extra.hlv_export_columns = JSON.stringify(choice.columns);
+                    hlvNativeAjax.call($, $.extend({}, base, {
+                        __hlvPlain: true,
+                        data: hlvAddParams(opts.data, extra),
+                        dataType: opts.dataType,
+                        xhrFields: opts.xhrFields,
+                        success: function (blob, status, xhr) {
+                            hlvSaveBlob(blob, xhr, (choice.name || info.filename || "export") + "." + choice.format);
+                            hlvExportResult(true);
+                        },
+                        error: function () {
+                            hlvExportResult(false);
+                        },
+                        complete: [function () { hlvExportFinish(); }].concat(opts.complete || []),
+                    }));
+                });
+            },
+            function () {
+                hlvExportFinish();
+                return plain();
+            }
+        );
+}
+
+// The prompt the quick exports start with is answered for them; see above.
+$(function () {
+    if (typeof Swal === "undefined" || Swal.__hlvQuickExportHook) return;
+    var original = Swal.fire;
+    Swal.__hlvQuickExportHook = true;
+    Swal.fire = function (options) {
+        var prompt = hlvMessages().downloadExcel;
+        if (prompt && options && typeof options === "object" && options.text === prompt) {
+            return Promise.resolve({ isConfirmed: true, isDenied: false, isDismissed: false, value: true });
+        }
+        return original.apply(this, arguments);
+    };
+});
+
+// Disabled action buttons do nothing. A disabled <button> already swallows its
+// click; links styled as disabled (.oh-btn--disabled / aria-disabled) would
+// otherwise navigate (href="#" jumps / reloads) or let the click reach the
+// row behind them (which opens its detail modal).
+document.addEventListener(
+    "click",
+    function (e) {
+        var el = e.target && e.target.closest && e.target.closest(".oh-btn--disabled, a[aria-disabled='true']");
+        if (!el) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+    },
+    true
+);
+
 var hlvNativeAjax = $.ajax;
 $.ajax = function (url, settings) {
     var opts = url && typeof url === "object" ? url : $.extend({}, settings, { url: url });
@@ -2193,6 +3006,13 @@ $.ajax = function (url, settings) {
         opts = $.extend({}, opts, {
             success: [function () { hlvDropSelectedIds(postedIds); }].concat(pageSuccess || []),
         });
+    }
+    // Exports fetched as a blob get the shared export dialog (see "Quick exports").
+    var isBlobRequest =
+        (opts.xhrFields && opts.xhrFields.responseType === "blob") || opts.dataType === "binary";
+    if (isBlobRequest && HLV_EXPORT_PATH.test(String(opts.url || "").split("?")[0])) {
+        if (opts.__hlvPlain) return hlvNativeAjax.call($, opts);
+        return hlvQuickExport(opts);
     }
     var kind = type === "POST" ? hlvBulkActionKind(opts.url) : null;
     if (kind) {

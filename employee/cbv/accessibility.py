@@ -203,6 +203,40 @@ def history_accessibility(
     return False
 
 
+def onboarding_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    Onboarding tab on the employee profile. For an employee converted from a
+    candidate it is shown to the employee themselves and to those who can see
+    that candidate's onboarding tab, otherwise only to users who can view
+    onboarding tasks.
+
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+    instance : Employee whose profile is being viewed.
+
+    Returns:
+    bool : True if the tab should be shown.
+    """
+    if not (
+        apps.is_installed("onboarding")
+        and apps.is_installed("recruitment")
+        and instance
+    ):
+        return False
+    from recruitment.cbv.accessibility import (
+        onboarding_accessibility as candidate_onboarding_accessibility,
+    )
+
+    candidate = instance.candidate_get.first()
+    if not candidate:
+        return request.user.has_perm("onboarding.view_onboardingtask")
+    if request.user == instance.employee_user_id:
+        return True
+    return candidate_onboarding_accessibility(request, candidate)
+
+
 def allocation_accessibility(
     request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
 ) -> bool:
@@ -280,3 +314,68 @@ def project_accessibility(
     ):
         return True
     return False
+
+
+def export_data_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    To export individual employee data
+    """
+    return any(apps.is_installed(app) for app in ("leave", "payroll", "attendance"))
+
+
+def allocations_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    To view employee allocations
+    """
+    return request.user.has_perm("employee.change_employee") or check_manager(
+        request.user.employee_get, instance
+    )
+
+
+def send_mail_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    To send mail to the employee
+    """
+    return True
+
+
+def admin_reset_password_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    To reset password / send invitation as admin
+    """
+    return request.user.has_perm("employee.change_employee")
+
+
+def archive_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    To archive an active employee
+    """
+    return request.user.has_perm("employee.delete_employee") and instance.is_active
+
+
+def un_archive_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    To un-archive an archived employee
+    """
+    return request.user.has_perm("employee.delete_employee") and not instance.is_active
+
+
+def delete_accessibility(
+    request, instance: object = None, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    """
+    To delete the employee
+    """
+    return request.user.has_perm("employee.delete_employee")
