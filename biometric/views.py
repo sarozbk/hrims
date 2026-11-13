@@ -107,6 +107,12 @@ def biometric_paginator_qry(data_list, page_number, per_page=25):
     return paginated_data
 
 
+def _get_zk_user_id(badge_id):
+    if not badge_id or not badge_id.isdecimal():
+        raise ValueError("ZKTeco user IDs must be numeric badge IDs.")
+    return badge_id
+
+
 def biometric_set_time(conn):
     """
     Sets the time on the biometric device using the provided connection.
@@ -1735,7 +1741,6 @@ def add_biometric_user(request, device_id):
                 # hand out one that already belongs to an enrolled employee.
                 existing_user_ids = {str(user.user_id) for user in device_users}
                 uid = 1
-                user_id = 1000
                 employee_ids = request.POST.getlist("employee_ids")
                 for obj_id in employee_ids:
                     employee = Employee.objects.get(id=obj_id)
@@ -1743,18 +1748,35 @@ def add_biometric_user(request, device_id):
                         employee_id=employee, device_id=device
                     ).first()
                     if existing_biometric_employee is None:
-                        while uid in existing_uids or str(user_id) in existing_user_ids:
+                        try:
+                            user_id = _get_zk_user_id(employee.badge_id)
+                        except ValueError:
+                            messages.error(
+                                request,
+                                _("{} has no numeric badge ID to add to the device").format(
+                                    employee
+                                ),
+                            )
+                            continue
+                        if user_id in existing_user_ids:
+                            messages.error(
+                                request,
+                                _("Badge ID {} already exists on the device").format(
+                                    user_id
+                                ),
+                            )
+                            continue
+                        while uid in existing_uids:
                             uid += 1
-                            user_id += 1
                         existing_uids.append(uid)
-                        existing_user_ids.add(str(user_id))
+                        existing_user_ids.add(user_id)
                         employee_name = employee.get_full_name()
                         conn.set_user(
                             uid=uid,
                             name=employee_name,
                             password="",
                             group_id="",
-                            user_id=str(user_id),
+                            user_id=user_id,
                             card=0,
                         )
                         # The ZK Biometric user ID must be a character value
