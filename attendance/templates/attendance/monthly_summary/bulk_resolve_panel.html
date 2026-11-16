@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 {% include "attendance/monthly_summary/_crp_dd_styles.html" %}
 <style>
 .crpb-date-chip {
@@ -42,7 +42,7 @@ body.dark .crpb-clear:hover { background: #333333; }
 
     <!-- ── Selected dates ───────────────────────────────────────────────── -->
     <div style="margin-bottom:12px;max-height:70px;overflow-y:auto;">
-      {% for d in dates %}<span class="crpb-date-chip">{{ d|date:"d M" }}</span>{% endfor %}
+      {% for d in dates %}<span class="crpb-date-chip">{{ d|payroll_date }}</span>{% endfor %}
     </div>
 
     <!-- ── Mark all as: the same dropdown the single day uses ──────────────── -->

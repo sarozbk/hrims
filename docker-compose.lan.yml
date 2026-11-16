@@ -1,0 +1,11 @@
+# LAN-only HTTP deployment overlay for the Rocky host.
+# Combine with docker-compose.yml and docker-compose.prod.yml.
+# Nginx uses host networking so firewalld can enforce the LAN source rule.
+services:
+  nginx:
+    network_mode: host
+    ports: !override []
+    restart: unless-stopped
+    volumes: !override
+      - staticfiles:/static:ro
+      - ./docker/nginx.lan.conf:/etc/nginx/nginx.conf:ro

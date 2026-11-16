@@ -1,9 +1,14 @@
 from django import forms
+from django.utils.translation import gettext_lazy as _
 
+from payroll.nepali_calendar import BikramSambatDateField
 from travel.models import TravelRequest
 
 
 class TravelRequestForm(forms.ModelForm):
+    departure_date = BikramSambatDateField(label=_("Departure Date"))
+    return_date = BikramSambatDateField(label=_("Return Date"))
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for field in self.fields.values():
@@ -16,7 +21,5 @@ class TravelRequestForm(forms.ModelForm):
             "mode_of_travel", "estimated_cost",
         )
         widgets = {
-            "departure_date": forms.DateInput(attrs={"type": "date"}),
-            "return_date": forms.DateInput(attrs={"type": "date"}),
             "purpose": forms.Textarea(attrs={"rows": 3}),
         }

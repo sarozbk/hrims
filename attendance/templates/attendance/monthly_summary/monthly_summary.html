@@ -1144,6 +1144,10 @@ function msSyncTemplateLink(params, selectedIds) {
   msRenderFilterTags();
   var chips = window.msActiveChips || [];
   var fmt = function (iso) {
+    if (window.NepaliFunctions && iso) {
+      var bs = window.NepaliFunctions.AD2BS(iso, 'YYYY-MM-DD', 'YYYY-MM-DD');
+      if (bs) return bs + ' BS';
+    }
     var d = new Date(iso + 'T00:00:00');
     return isNaN(d) ? iso : d.toLocaleDateString('en-GB', {day: '2-digit', month: 'short', year: 'numeric'});
   };

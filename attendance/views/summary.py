@@ -1475,6 +1475,15 @@ def attendance_monthly_summary(request):
     # particular doesn't scale as a full dump. Only the currently-selected
     # instances need a real <option> here (select2's own preload
     # requirement), same pattern as HorillaFilterSet._apply_ajax_fields.
+    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+
+    if nepali_calendar_enabled():
+        period_text = (
+            f"{format_payroll_date(from_date)} \u2013 {format_payroll_date(to_date)} BS"
+        )
+    else:
+        period_text = f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}"
+
     context = {
         "range_choices": range_choices(request),
         "range_mode": chosen_range_mode(request),
@@ -1726,11 +1735,19 @@ def _render_dashboard(request, employee_qs, from_date, to_date):
             worst = (name, ratio)
 
     chosen = Department.objects.filter(pk__in=request.GET.getlist("department_id"))
-    period = (
-        f"{from_date:%d %b %Y}"
-        if from_date == to_date
-        else f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}"
-    )
+    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+
+    if nepali_calendar_enabled():
+        period = format_payroll_date(from_date)
+        if from_date != to_date:
+            period += f" \u2013 {format_payroll_date(to_date)}"
+        period += " BS"
+    else:
+        period = (
+            f"{from_date:%d %b %Y}"
+            if from_date == to_date
+            else f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}"
+        )
 
     context = {
         "period": period,
@@ -1831,7 +1848,9 @@ def daily_cell(cell):
     else:
         code = _DAILY_CODES.get(status, "")
         label = labels.get(status, status)
-    title = f"{cell['date']:%d %b %Y} \u2014 {label}"
+    from payroll.nepali_calendar import format_payroll_date
+
+    title = f"{format_payroll_date(cell['date'])} \u2014 {label}"
     if cell.get("detail") and status not in ("split",) and not cell.get("future_part"):
         title += f" ({cell['detail']})"
     if cell.get("conflict_reason"):
@@ -1891,17 +1910,37 @@ def _render_daily(request, employee_qs, from_date, to_date):
         ordered = employee_qs.order_by("employee_first_name", "employee_last_name")
         page = paginator_qry(ordered, request.GET.get("page"))
         rows = build_daily_rows(list(page), from_date, to_date)
+    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+
+    if nepali_calendar_enabled():
+        period_text = (
+            f"{format_payroll_date(from_date)} \u2013 {format_payroll_date(to_date)} BS"
+        )
+        displayed_days = [
+            {
+                "date": d,
+                "display_day": format_payroll_date(d).split(" ", 1)[0],
+                "weekend": d.weekday() >= 5,
+                "today": d == today,
+            }
+            for d in dates
+        ]
+    else:
+        period_text = f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}"
+        displayed_days = [
+            {"date": d, "display_day": d.day, "weekend": d.weekday() >= 5, "today": d == today}
+            for d in dates
+        ]
+
     context = {
         "rows": rows,
         "page": page,
-        "days": [
-            {"date": d, "weekend": d.weekday() >= 5, "today": d == today} for d in dates
-        ],
+        "days": displayed_days,
         "too_long": too_long,
         "max_days": DAILY_VIEW_MAX_DAYS,
         "from_date": from_date.isoformat(),
         "to_date": to_date.isoformat(),
-        "period_text": f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}",
+        "period_text": period_text,
         "pd": request.GET.urlencode(),
         "total_employee_count": employee_qs.count(),
     }
@@ -2029,6 +2068,15 @@ def attendance_monthly_summary_table(request):
     else:
         rows = paginator_qry(rows, request.GET.get("page"))
 
+    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+
+    if nepali_calendar_enabled():
+        period_text = (
+            f"{format_payroll_date(from_date)} \u2013 {format_payroll_date(to_date)} BS"
+        )
+    else:
+        period_text = f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}"
+
     context = {
         "rows": rows,
         "grouped": bool(group_keys),
@@ -2043,7 +2091,7 @@ def attendance_monthly_summary_table(request):
         "summary_totals": summary_totals,
         "from_date": from_date.isoformat(),
         "to_date": to_date.isoformat(),
-        "period_text": f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}",
+        "period_text": period_text,
         "pd": request.GET.urlencode(),
         "select_all_ids": select_all_ids,
         "total_employee_count": total_employee_count,
@@ -2142,7 +2190,14 @@ def attendance_monthly_summary_export(request):
     company = getattr(request, "selected_company_instance", None)
     company_title = getattr(company, "company", "") if company else ""
     company_logo = getattr(company, "icon", "") if company else ""
-    date_range_str = f"{from_date}  TO  {to_date}"
+    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+
+    if nepali_calendar_enabled():
+        date_range_str = (
+            f"{format_payroll_date(from_date)}  TO  {format_payroll_date(to_date)} BS"
+        )
+    else:
+        date_range_str = f"{from_date}  TO  {to_date}"
     report_title = str(_("Monthly Attendance Summary"))
 
     output = io.BytesIO()
@@ -2835,9 +2890,27 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
     unpaid_map = {}
     leave_to = to_date
     if show_future_leave:
-        leave_to = to_date.replace(
-            day=calendar.monthrange(to_date.year, to_date.month)[1]
+        from payroll.nepali_calendar import (
+            bikram_sambat_to_gregorian,
+            nepali_calendar_enabled,
         )
+
+        if nepali_calendar_enabled():
+            import nepali_datetime
+
+            bs_month = nepali_datetime.date.from_datetime_date(to_date)
+            next_month = (
+                (bs_month.year + 1, 1)
+                if bs_month.month == 12
+                else (bs_month.year, bs_month.month + 1)
+            )
+            leave_to = bikram_sambat_to_gregorian(
+                f"{next_month[0]:04d}-{next_month[1]:02d}-01"
+            ) - datetime.timedelta(days=1)
+        else:
+            leave_to = to_date.replace(
+                day=calendar.monthrange(to_date.year, to_date.month)[1]
+            )
     qs_range = LeaveRequest.objects.filter(
         employee_id=emp,
         status__in=["approved", "cancel_requested"],
@@ -3178,20 +3251,70 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
         return "absent", "", None, None, False
 
     # -- Build month grid structures ------------------------------------------
+    from payroll.nepali_calendar import (
+        bikram_sambat_to_gregorian,
+        format_payroll_date,
+        nepali_calendar_enabled,
+    )
+
     months = []
     today = datetime.date.today()
-    cur = from_date.replace(day=1)
-    last = leave_to.replace(day=1)
-    while cur <= last:
-        yr, mo = cur.year, cur.month
+    month_specs = []
+    if nepali_calendar_enabled():
+        import nepali_datetime
+
+        first_bs = nepali_datetime.date.from_datetime_date(from_date)
+        last_bs = nepali_datetime.date.from_datetime_date(leave_to)
+        year, month = first_bs.year, first_bs.month
+        while (year, month) <= (last_bs.year, last_bs.month):
+            month_start = bikram_sambat_to_gregorian(
+                f"{year:04d}-{month:02d}-01"
+            )
+            if month == 12:
+                next_year, next_month = year + 1, 1
+            else:
+                next_year, next_month = year, month + 1
+            month_end = bikram_sambat_to_gregorian(
+                f"{next_year:04d}-{next_month:02d}-01"
+            ) - datetime.timedelta(days=1)
+            days = [
+                month_start + datetime.timedelta(days=offset)
+                for offset in range((month_end - month_start).days + 1)
+            ]
+            grid = [None] * month_start.weekday() + days
+            grid += [None] * ((-len(grid)) % 7)
+            weeks = [grid[offset : offset + 7] for offset in range(0, len(grid), 7)]
+            label = format_payroll_date(month_start).split(" ", 1)[1] + " BS"
+            month_specs.append((label, weeks))
+            year, month = next_year, next_month
+    else:
+        cur = from_date.replace(day=1)
+        last = leave_to.replace(day=1)
+        while cur <= last:
+            weeks = [
+                [datetime.date(cur.year, cur.month, day) if day else None for day in week]
+                for week in calendar.monthcalendar(cur.year, cur.month)
+            ]
+            month_specs.append((cur.strftime("%B %Y"), weeks))
+            year, month = cur.year, cur.month + 1
+            if month > 12:
+                year, month = year + 1, 1
+            cur = datetime.date(year, month, 1)
+
+    for month_label, week_dates in month_specs:
         weeks = []
-        for week in calendar.monthcalendar(yr, mo):
+        for week in week_dates:
             cells = []
-            for n in week:
-                if n == 0:
+            for d in week:
+                if d is None:
                     cells.append(None)
                 else:
-                    d = datetime.date(yr, mo, n)
+                    n = (
+                        nepali_datetime.date.from_datetime_date(d).day
+                        if nepali_calendar_enabled()
+                        else d.day
+                    )
+                    display_day = format_payroll_date(d).split(" ", 1)[0]
                     future_leave = (
                         show_future_leave
                         and d > to_date
@@ -3208,6 +3331,7 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
                         cells.append(
                             {
                                 "day": n,
+                                "display_day": display_day,
                                 "date": d,
                                 "status": "out_of_range",
                                 "detail": "",
@@ -3309,6 +3433,7 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
                         cells.append(
                             {
                                 "day": n,
+                                "display_day": display_day,
                                 "date": d,
                                 "status": status,
                                 "detail": detail,
@@ -3340,11 +3465,7 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
                             }
                         )
             weeks.append(cells)
-        months.append({"label": cur.strftime("%B %Y"), "weeks": weeks})
-        mo += 1
-        if mo > 12:
-            mo, yr = 1, yr + 1
-        cur = datetime.date(yr, mo, 1)
+        months.append({"label": month_label, "weeks": weeks})
 
     # -- Summary counts -------------------------------------------------------
     cal_summary = {

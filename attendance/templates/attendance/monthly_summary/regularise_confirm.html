@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 {% comment %}
 What the uploaded months are about to settle.
 
@@ -52,7 +52,7 @@ exactly as it was, and the upload is thrown away rather than half-applied.
   </style>
 
   <div class="rc__intro">
-    {% blocktrans count n=rows|length with start=period_from|date:"j M Y" end=period_to|date:"j M Y" %}
+    {% blocktrans count n=rows|length with start=period_from|payroll_date end=period_to|payroll_date %}
       One employee in this upload has a day with both attendance and leave on it,
       still unresolved for {{ start }} – {{ end }}. Stating their totals settles it.
     {% plural %}
@@ -78,7 +78,7 @@ exactly as it was, and the upload is thrown away rather than half-applied.
           <td><span class="rc__count">{{ row.unresolved_conflicts }}</span></td>
           <td class="rc__dates">
             {% for day in row.unresolved_conflict_dates %}
-              {{ day|date:"j M" }}{% if not forloop.last %}, {% endif %}
+              {{ day|payroll_date }}{% if not forloop.last %}, {% endif %}
             {% empty %}
               &mdash;
             {% endfor %}

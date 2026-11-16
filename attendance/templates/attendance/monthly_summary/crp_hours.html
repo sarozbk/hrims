@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 {% if edit_mode %}
 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
   <input type="text"
@@ -40,7 +40,7 @@
 <div style="font-size:.7rem;color:#6b7280;margin-top:2px;">
   &#9998; {% trans "Edited by" %}
   <strong>{{ daily_obj.modified_by.employee_get.employee_first_name|default:daily_obj.modified_by.username }}{% if daily_obj.modified_by.employee_get.employee_last_name %} {{ daily_obj.modified_by.employee_get.employee_last_name }}{% endif %}</strong>
-  · {{ daily_obj.modified_at|date:"d M Y, H:i" }}
+  · {{ daily_obj.modified_at|payroll_date }} {{ daily_obj.modified_at|date:"H:i" }}
 </div>
 {% elif is_hours_edited %}
 <div style="font-size:.7rem;color:#6b7280;margin-top:2px;">

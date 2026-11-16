@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 <input type="hidden" id="cal-resolve-date" value="{{ date|date:'Y-m-d' }}">
 
 {% include "attendance/monthly_summary/_crp_dd_styles.html" %}
@@ -199,25 +199,25 @@ body.dark .crp-hist-meta strong { color: #bbbbbb; }
     <div style="display:flex;align-items:center;gap:8px;">
       {% if existing_resolution and conflict_type == "paid_leave" or existing_resolution and conflict_type == "unpaid_leave" %}
         <ion-icon name="checkmark-circle-outline" style="color:#10b981;font-size:1.1rem;flex-shrink:0;"></ion-icon>
-        <span class="crp-title crp-title--ok">{% trans "Overridden" %} — {{ date|date:"d M Y" }}</span>
+        <span class="crp-title crp-title--ok">{% trans "Overridden" %} — {{ date|payroll_date }}</span>
       {% elif conflict_type == "paid_leave" or conflict_type == "unpaid_leave" %}
         <ion-icon name="warning-outline" style="color:#e85d04;font-size:1.1rem;flex-shrink:0;"></ion-icon>
         <span class="crp-title crp-title--warn">
-          {% trans "Conflict" %} — {{ date|date:"d M Y" }}
+          {% trans "Conflict" %} — {{ date|payroll_date }}
           <span class="crp-title-sub">{% trans "attendance overlaps approved leave" %}</span>
         </span>
       {% elif conflict_type == "holiday_ot" %}
         <ion-icon name="sunny-outline" style="color:#0f766e;font-size:1.1rem;flex-shrink:0;"></ion-icon>
-        <span class="crp-title crp-title--hol">{% trans "Holiday OT" %} — {{ date|date:"d M Y" }}</span>
+        <span class="crp-title crp-title--hol">{% trans "Holiday OT" %} — {{ date|payroll_date }}</span>
       {% elif conflict_type == "week_off_ot" %}
         <ion-icon name="moon-outline" style="color:#7c3aed;font-size:1.1rem;flex-shrink:0;"></ion-icon>
-        <span class="crp-title crp-title--woff">{% trans "Week Off OT" %} — {{ date|date:"d M Y" }}</span>
+        <span class="crp-title crp-title--woff">{% trans "Week Off OT" %} — {{ date|payroll_date }}</span>
       {% elif existing_resolution %}
         <ion-icon name="checkmark-circle-outline" style="color:#10b981;font-size:1.1rem;flex-shrink:0;"></ion-icon>
-        <span class="crp-title crp-title--ok">{% trans "Overridden" %} — {{ date|date:"d M Y" }}</span>
+        <span class="crp-title crp-title--ok">{% trans "Overridden" %} — {{ date|payroll_date }}</span>
       {% else %}
         <ion-icon name="calendar-outline" style="color:#6366f1;font-size:1.1rem;flex-shrink:0;"></ion-icon>
-        <span class="crp-title crp-title--plain">{{ date|date:"d M Y" }}</span>
+        <span class="crp-title crp-title--plain">{{ date|payroll_date }}</span>
       {% endif %}
     </div>
     <button onclick="msCalClosePanel()"
@@ -382,7 +382,7 @@ body.dark .crp-hist-meta strong { color: #bbbbbb; }
     <div class="crp-hours-note">
       &#9998; {% if panel_daily_obj.modified_by %}{% trans "Edited by" %}
       <strong>{{ panel_daily_obj.modified_by.employee_get.employee_first_name|default:panel_daily_obj.modified_by.username }}{% if panel_daily_obj.modified_by.employee_get.employee_last_name %} {{ panel_daily_obj.modified_by.employee_get.employee_last_name }}{% endif %}</strong>
-      &middot; {{ panel_daily_obj.modified_at|date:"d M Y, H:i" }}{% else %}{% trans "Manually edited" %}{% endif %}
+      &middot; {{ panel_daily_obj.modified_at|payroll_date }} {{ panel_daily_obj.modified_at|date:"H:i" }}{% else %}{% trans "Manually edited" %}{% endif %}
     </div>
     {% endif %}
   </div>
@@ -412,7 +412,7 @@ body.dark .crp-hist-meta strong { color: #bbbbbb; }
           </div>
           {% endif %}
           <div class="crp-hist-meta">
-            {% if entry.by %}{% trans "by" %} <strong>{{ entry.by }}</strong> &middot; {% endif %}{{ entry.at|date:"d M Y, H:i" }}
+            {% if entry.by %}{% trans "by" %} <strong>{{ entry.by }}</strong> &middot; {% endif %}{{ entry.at|payroll_date }} {{ entry.at|date:"H:i" }}
           </div>
         </div>
       </div>
@@ -424,7 +424,7 @@ body.dark .crp-hist-meta strong { color: #bbbbbb; }
         <div class="crp-hist-body">
           <div class="crp-hist-line"><strong>{% trans "Hours set to" %} {{ panel_hours_label }}</strong></div>
           <div class="crp-hist-meta">
-            {% if panel_daily_obj.modified_by %}{% trans "by" %} <strong>{{ panel_daily_obj.modified_by.employee_get.employee_first_name|default:panel_daily_obj.modified_by.username }} {{ panel_daily_obj.modified_by.employee_get.employee_last_name }}</strong> &middot; {% endif %}{{ panel_daily_obj.modified_at|date:"d M Y, H:i" }}
+            {% if panel_daily_obj.modified_by %}{% trans "by" %} <strong>{{ panel_daily_obj.modified_by.employee_get.employee_first_name|default:panel_daily_obj.modified_by.username }} {{ panel_daily_obj.modified_by.employee_get.employee_last_name }}</strong> &middot; {% endif %}{{ panel_daily_obj.modified_at|payroll_date }} {{ panel_daily_obj.modified_at|date:"H:i" }}
           </div>
         </div>
       </div>
@@ -438,7 +438,7 @@ body.dark .crp-hist-meta strong { color: #bbbbbb; }
             <span class="crp-pill" style="background:{{ override_status_bg }};color:{{ override_status_fg }};">{{ override_status_label }}</span>
           </div>
           <div class="crp-hist-meta">
-            {% if existing_obj.modified_by %}{% trans "by" %} <strong>{{ existing_obj.modified_by.employee_get.employee_first_name|default:existing_obj.modified_by.username }} {{ existing_obj.modified_by.employee_get.employee_last_name }}</strong> &middot; {% endif %}{{ existing_obj.created_at|date:"d M Y, H:i" }}
+            {% if existing_obj.modified_by %}{% trans "by" %} <strong>{{ existing_obj.modified_by.employee_get.employee_first_name|default:existing_obj.modified_by.username }} {{ existing_obj.modified_by.employee_get.employee_last_name }}</strong> &middot; {% endif %}{{ existing_obj.created_at|payroll_date }} {{ existing_obj.created_at|date:"H:i" }}
           </div>
         </div>
       </div>

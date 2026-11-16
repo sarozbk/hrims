@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 <!DOCTYPE html><html><head><meta charset="utf-8"><style>
 @page { size: A4; margin: 22mm 18mm; }
 body { font-family: Helvetica, Arial, sans-serif; color:#1f2937; font-size:12px; }
@@ -15,7 +15,7 @@ td:first-child { width:32%; font-weight:bold; background:#f1f5f9; }
 .line { margin-top:45px; border-top:1px solid #334155; width:85%; }
 </style></head><body>
 <div class="header"><div class="company">{{ company|default:"" }}</div><h1>{% trans "TRAVEL ORDER" %}</h1></div>
-<div class="order">{% trans "Order No." %}: TR-{{ travel_request.pk|stringformat:"06d" }}<br>{% trans "Issued" %}: {{ travel_request.approved_at|date:"d M Y" }}</div>
+<div class="order">{% trans "Order No." %}: TR-{{ travel_request.pk|stringformat:"06d" }}<br>{% trans "Issued" %}: {{ travel_request.approved_at|payroll_date }}</div>
 <p>{% blocktrans with employee=travel_request.employee.get_full_name destination=travel_request.destination %}This order authorizes {{ employee }} to travel to {{ destination }} for official business as described below.{% endblocktrans %}</p>
 <table>
 <tr><td>{% trans "Employee" %}</td><td>{{ travel_request.employee.get_full_name }}</td></tr>
@@ -23,8 +23,8 @@ td:first-child { width:32%; font-weight:bold; background:#f1f5f9; }
 <tr><td>{% trans "Department" %}</td><td>{{ travel_request.employee.employee_work_info.department_id|default:"—" }}</td></tr>
 <tr><td>{% trans "Destination" %}</td><td>{{ travel_request.destination }}</td></tr>
 <tr><td>{% trans "Purpose" %}</td><td>{{ travel_request.purpose|linebreaksbr }}</td></tr>
-<tr><td>{% trans "Departure Date" %}</td><td>{{ travel_request.departure_date|date:"d M Y" }}</td></tr>
-<tr><td>{% trans "Return Date" %}</td><td>{{ travel_request.return_date|date:"d M Y" }}</td></tr>
+<tr><td>{% trans "Departure Date" %}</td><td>{{ travel_request.departure_date|payroll_date }}</td></tr>
+<tr><td>{% trans "Return Date" %}</td><td>{{ travel_request.return_date|payroll_date }}</td></tr>
 <tr><td>{% trans "Mode of Travel" %}</td><td>{{ travel_request.mode_of_travel|default:"—" }}</td></tr>
 <tr><td>{% trans "Estimated Cost" %}</td><td>{{ travel_request.estimated_cost|default:"—" }}</td></tr>
 <tr><td>{% trans "Approved By" %}</td><td>{{ travel_request.approved_by.get_full_name|default:"—" }}</td></tr>

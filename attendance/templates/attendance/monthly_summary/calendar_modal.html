@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 <style>
 .cal-header {
   padding: 14px 20px 10px;
@@ -391,7 +391,7 @@
     {% if employee.badge_id %}<span class="cal-emp-badge">#{{ employee.badge_id }}</span>{% endif %}
     {% endif %}
     <div class="cal-range">
-      {{ from_date|date:"d M Y" }} — {{ to_date|date:"d M Y" }}
+      {{ from_date|payroll_date }} — {{ to_date|payroll_date }}{% nepali_calendar_is_enabled as nepali_calendar_enabled %}{% if nepali_calendar_enabled %} BS{% endif %}
     </div>
   </div>
 </div>
@@ -488,17 +488,17 @@
           <div class="cal-cell cal-empty"></div>
         {% elif cell.status == "out_of_range" %}
           <div class="cal-cell cal-out-of-range">
-            <div class="cal-day-num">{{ cell.day }}</div>
+            <div class="cal-day-num">{{ cell.display_day }}</div>
           </div>
         {% else %}
           <div class="cal-cell cal-{{ cell.status }}{% if cell.future_part %} cal-split cal-split--ahead{% endif %}{% if cell.is_conflict %} cal-has-conflict{% elif cell.resolution %} cal-resolved-conflict{% endif %}"
                data-date="{{ cell.date|date:'Y-m-d' }}"
                data-groups="{{ cell.groups }}"
                data-halves="{{ cell.halves_data }}"
-               title="{{ cell.date|date:'d M Y' }}{% if cell.split_label %} — {{ cell.split_label }}{% elif cell.detail %} — {{ cell.detail }}{% endif %}{% if cell.conflict_with == 'paid_leave' or cell.conflict_with == 'unpaid_leave' %} ⚠ {% if cell.conflict_reason %}{{ cell.conflict_reason }}{% else %}conflicts with {{ cell.conflict_with }}{% endif %}{% elif cell.conflict_with == 'holiday_ot' %} HO — Holiday Overtime{% elif cell.conflict_with == 'week_off_ot' %} WO — Week Off Overtime{% elif cell.conflict_with == 'regular_ot' %} OT — Overtime{% elif cell.resolution %} ✓ resolved{% endif %}{% if not readonly %}{% trans ' — Ctrl/Shift-click to select multiple days' %}{% endif %}"
+               title="{{ cell.date|payroll_date }}{% if cell.split_label %} — {{ cell.split_label }}{% elif cell.detail %} — {{ cell.detail }}{% endif %}{% if cell.conflict_with == 'paid_leave' or cell.conflict_with == 'unpaid_leave' %} ⚠ {% if cell.conflict_reason %}{{ cell.conflict_reason }}{% else %}conflicts with {{ cell.conflict_with }}{% endif %}{% elif cell.conflict_with == 'holiday_ot' %} HO — Holiday Overtime{% elif cell.conflict_with == 'week_off_ot' %} WO — Week Off Overtime{% elif cell.conflict_with == 'regular_ot' %} OT — Overtime{% elif cell.resolution %} ✓ resolved{% endif %}{% if not readonly %}{% trans ' — Ctrl/Shift-click to select multiple days' %}{% endif %}"
                {% if not readonly %}onclick="msCalCellClick(event, this, '{{ cell.date|date:'Y-m-d' }}', '{{ cell.conflict_with|default:'' }}', '{{ cell.detail|default:''|escapejs }}')"{% endif %}
                {% if cell.split_style %}style="{{ cell.split_style }}{% if readonly %};cursor:default{% endif %}"{% elif readonly %}style="cursor:default;"{% endif %}>
-            <div class="cal-day-num">{{ cell.day }}</div>
+            <div class="cal-day-num">{{ cell.display_day }}</div>
             {% if cell.split_label %}{% elif cell.detail %}<div class="cal-day-detail">{{ cell.detail }}</div>{% endif %}
             {% if cell.conflict_with == "paid_leave" or cell.conflict_with == "unpaid_leave" %}
               <div class="cal-conflict-dot" title="{% trans 'Leave conflict — click to regularize' %}"></div>

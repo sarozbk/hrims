@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 {% if metric == "present" %}
   <div class="ms-pop-header" style="border-top:3px solid #28a745;">
     <ion-icon name="checkmark-circle-outline" style="color:#28a745;"></ion-icon>
@@ -10,7 +10,7 @@
         {% if r.day_type == "full" %}
           <div class="ms-pop-row" style="border-left:3px solid #28a745;padding-left:10px;">
             <div>
-              <span class="ms-pop-date">{{ r.attendance_date|date:"D, d M Y" }}</span>
+              <span class="ms-pop-date">{{ r.attendance_date|payroll_date }}</span>
               {% if r.is_regularized %}<span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>{% endif %}
               <div class="ms-pop-badge" style="color:#28a745;">
                 {{ r.attendance_clock_in|default:"—" }}{% if r.attendance_clock_out %} – {{ r.attendance_clock_out }}{% endif %}
@@ -28,7 +28,7 @@
         {% elif r.day_type == "half" %}
           <div class="ms-pop-row" style="border-left:3px solid #e85d04;padding-left:10px;background:#fff4ed;">
             <div>
-              <span class="ms-pop-date">{{ r.attendance_date|date:"D, d M Y" }}</span>
+              <span class="ms-pop-date">{{ r.attendance_date|payroll_date }}</span>
               <span style="display:inline-block;margin-left:6px;font-size:.65rem;font-weight:700;background:#ffedd5;color:#92400e;border-radius:4px;padding:1px 5px;vertical-align:middle;">{% trans "HALF DAY" %}</span>
               {% if r.is_regularized %}<span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>{% endif %}
               <div class="ms-pop-badge" style="color:#e85d04;">
@@ -47,7 +47,7 @@
         {% elif r.day_type == "short" %}
           <div class="ms-pop-row" style="border-left:3px solid #6366f1;padding-left:10px;background:#f5f3ff;">
             <div>
-              <span class="ms-pop-date" style="color:#4338ca;">{{ r.attendance_date|date:"D, d M Y" }}</span>
+              <span class="ms-pop-date" style="color:#4338ca;">{{ r.attendance_date|payroll_date }}</span>
               <span style="display:inline-block;margin-left:6px;font-size:.65rem;font-weight:700;background:#ede9fe;color:#3730a3;border-radius:4px;padding:1px 5px;vertical-align:middle;">{% trans "SHORT HOURS" %}</span>
               {% if r.is_regularized %}<span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>{% endif %}
               <div class="ms-pop-badge" style="color:#6366f1;">
@@ -66,7 +66,7 @@
         {% else %}
           <div class="ms-pop-row" style="border-left:3px solid #dc3545;padding-left:10px;background:#fff5f5;">
             <div>
-              <span class="ms-pop-date" style="color:#dc3545;">{{ r.attendance_date|date:"D, d M Y" }}</span>
+              <span class="ms-pop-date" style="color:#dc3545;">{{ r.attendance_date|payroll_date }}</span>
               <span style="display:inline-block;margin-left:6px;font-size:.65rem;font-weight:700;background:#fee2e2;color:#991b1b;border-radius:4px;padding:1px 5px;vertical-align:middle;">{% trans "MISSING OUT" %}</span>
               {% if r.is_regularized %}<span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>{% endif %}
               <div class="ms-pop-badge" style="color:#dc3545;">
@@ -160,7 +160,7 @@
       {% for r in records %}
         <div class="ms-pop-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
           <div style="display:flex;align-items:center;gap:6px;width:100%;">
-            <span class="ms-pop-date">{{ r.date|date:"D, d M Y" }}</span>
+            <span class="ms-pop-date">{{ r.date|payroll_date }}</span>
             {% if r.day_type == "full" %}
               <span style="font-size:.62rem;font-weight:700;background:#d1fae5;color:#065f46;border-radius:4px;padding:1px 5px;">{% trans "FULL" %}</span>
             {% elif r.day_type == "half" %}
@@ -197,7 +197,7 @@
     {% if records %}
       {% for r in records %}
       <div class="ms-pop-row">
-        <span class="ms-pop-date" style="color:#dc3545;">{{ r.date|date:"D, d M Y" }}</span>
+        <span class="ms-pop-date" style="color:#dc3545;">{{ r.date|payroll_date }}</span>
         {% if r.short %}<span class="ms-pop-reg-badge" style="background:#fee2e2;color:#991b1b;" title="{% trans 'Worked / required' %}">{% trans "Short hours" %} {{ r.worked_label }}</span>{% endif %}
         {% if r.half %}<span class="ms-pop-reg-badge" style="background:#fee2e2;color:#991b1b;">{% trans "Half" %}</span>{% endif %}
         {% if r.is_regularized %}<span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>{% endif %}
@@ -218,7 +218,7 @@
       {% for item in records %}
       <div class="ms-pop-row">
         <div><span class="ms-pop-date" style="color:#0e7490;">{{ item.destination }}</span>
-          <div class="ms-pop-badge">{{ item.departure_date|date:"d M Y" }} – {{ item.return_date|date:"d M Y" }}</div>
+          <div class="ms-pop-badge">{{ item.departure_date|payroll_date }} – {{ item.return_date|payroll_date }}</div>
           <div>{{ item.purpose|truncatechars:120 }}</div>
         </div>
       </div>
@@ -240,7 +240,7 @@
             <span class="ms-pop-date" style="color:#166534;">{{ lr.leave_type_id.name }}</span>
             <span style="display:inline-block;margin-left:6px;font-size:.65rem;font-weight:700;background:#dcfce7;color:#166534;border-radius:4px;padding:1px 5px;vertical-align:middle;">{% trans "APPROVED" %}</span>
             <div class="ms-pop-badge" style="color:#28a745;">
-              {{ lr.start_date|date:"d M" }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|date:"d M Y" }}{% else %}, {{ lr.start_date|date:"Y" }}{% endif %}
+              {{ lr.start_date|payroll_date }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|payroll_date }}{% endif %}
             </div>
           </div>
         </div>
@@ -250,7 +250,7 @@
             <span class="ms-pop-date" style="color:#6c757d;">{{ lr.leave_type_id.name }}</span>
             <span style="display:inline-block;margin-left:6px;font-size:.65rem;font-weight:700;background:#e9ecef;color:#495057;border-radius:4px;padding:1px 5px;vertical-align:middle;">{% trans "PENDING" %}</span>
             <div class="ms-pop-badge" style="color:#adb5bd;">
-              {{ lr.start_date|date:"d M" }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|date:"d M Y" }}{% else %}, {{ lr.start_date|date:"Y" }}{% endif %}
+              {{ lr.start_date|payroll_date }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|payroll_date }}{% endif %}
             </div>
           </div>
         </div>
@@ -259,7 +259,7 @@
       {% for rl in resolution_only_leave %}
         <div class="ms-pop-row" style="border-left:3px solid #0d6efd;padding-left:10px;background:#eff6ff;">
           <div>
-            <span class="ms-pop-date" style="color:#1d4ed8;">{{ rl.date|date:"D, d M Y" }}</span>
+            <span class="ms-pop-date" style="color:#1d4ed8;">{{ rl.date|payroll_date }}</span>
             <span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>
           </div>
         </div>
@@ -283,7 +283,7 @@
             <span class="ms-pop-date" style="color:#166534;">{{ lr.leave_type_id.name }}</span>
             <span style="display:inline-block;margin-left:6px;font-size:.65rem;font-weight:700;background:#dcfce7;color:#166534;border-radius:4px;padding:1px 5px;vertical-align:middle;">{% trans "APPROVED" %}</span>
             <div class="ms-pop-badge" style="color:#28a745;">
-              {{ lr.start_date|date:"d M" }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|date:"d M Y" }}{% else %}, {{ lr.start_date|date:"Y" }}{% endif %}
+              {{ lr.start_date|payroll_date }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|payroll_date }}{% endif %}
             </div>
           </div>
         </div>
@@ -293,7 +293,7 @@
             <span class="ms-pop-date" style="color:#6c757d;">{{ lr.leave_type_id.name }}</span>
             <span style="display:inline-block;margin-left:6px;font-size:.65rem;font-weight:700;background:#e9ecef;color:#495057;border-radius:4px;padding:1px 5px;vertical-align:middle;">{% trans "PENDING" %}</span>
             <div class="ms-pop-badge" style="color:#adb5bd;">
-              {{ lr.start_date|date:"d M" }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|date:"d M Y" }}{% else %}, {{ lr.start_date|date:"Y" }}{% endif %}
+              {{ lr.start_date|payroll_date }}{% if lr.end_date and lr.end_date != lr.start_date %} – {{ lr.end_date|payroll_date }}{% endif %}
             </div>
           </div>
         </div>
@@ -302,7 +302,7 @@
       {% for rl in resolution_only_leave %}
         <div class="ms-pop-row" style="border-left:3px solid #fd7e14;padding-left:10px;background:#fff7ed;">
           <div>
-            <span class="ms-pop-date" style="color:#c2410c;">{{ rl.date|date:"D, d M Y" }}</span>
+            <span class="ms-pop-date" style="color:#c2410c;">{{ rl.date|payroll_date }}</span>
             <span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>
           </div>
         </div>
@@ -324,7 +324,7 @@
     {% if records %}
       {% for r in records %}
       <div class="ms-pop-row">
-        <span class="ms-pop-date" style="color:#6610f2;">{{ r.date|date:"D, d M Y" }}</span>
+        <span class="ms-pop-date" style="color:#6610f2;">{{ r.date|payroll_date }}</span>
         {% if r.is_regularized %}<span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>{% endif %}
       </div>
       {% endfor %}
@@ -346,7 +346,7 @@
           <span class="ms-pop-date">{{ h.name }}</span>
           {% if h.is_regularized %}<span class="ms-pop-reg-badge"><ion-icon name="checkmark-circle-outline" style="font-size:.7rem;"></ion-icon>{% trans "Regularized" %}</span>{% endif %}
           <div class="ms-pop-badge" style="color:#20c997;">
-            {{ h.start_date|date:"d M" }}{% if h.end_date != h.start_date %} – {{ h.end_date|date:"d M Y" }}{% else %}, {{ h.start_date|date:"Y" }}{% endif %}
+            {{ h.start_date|payroll_date }}{% if h.end_date != h.start_date %} – {{ h.end_date|payroll_date }}{% endif %}
           </div>
         </div>
       </div>

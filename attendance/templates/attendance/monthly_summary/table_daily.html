@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 {# Day-wise view of the monthly summary: employees down, one column per date, the day's status in each cell. #}
 
 <style>
@@ -119,8 +119,8 @@
         <tr>
           <th class="dv-emp">{% trans "Employee" %}</th>
           {% for day in days %}
-            <th class="dv-day{% if day.weekend %} weekend{% endif %}{% if day.today %} today{% endif %}" title="{{ day.date|date:'D, d M Y' }}">
-              {{ day.date|date:"j" }}<small>{{ day.date|date:"D" }}</small>
+            <th class="dv-day{% if day.weekend %} weekend{% endif %}{% if day.today %} today{% endif %}" title="{{ day.date|payroll_date }}">
+              {{ day.display_day }}<small>{{ day.date|date:"D" }}</small>
             </th>
           {% endfor %}
         </tr>
