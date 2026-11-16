@@ -22,6 +22,7 @@ from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelec
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
 from payroll.models.models import PayPeriodSettings
 from payroll.models.payroll_batch import _ordinal
+from payroll.nepali_calendar import BikramSambatDateField
 
 
 class _CompanySelect(forms.Select):
@@ -209,17 +210,17 @@ class PayrollBatchScopeForm(HorillaForm):
             "What this batch is called in the list. Suggested from the period."
         ),
     )
-    period_start = forms.DateField(
-        label=_("Period Start"), widget=forms.DateInput(attrs={"type": "date"})
+    period_start = BikramSambatDateField(
+        label=_("Period Start"),
+        help_text=_("Enter the date in Bikram Sambat as YYYY-MM-DD."),
     )
     # Never typed: it is always the start plus the days of the start's month, so
     # whatever is posted for it is ignored (see clean()).
-    period_end = forms.DateField(
+    period_end = BikramSambatDateField(
         label=_("Period End"),
         required=False,
-        widget=forms.DateInput(attrs={"type": "date", "readonly": "readonly"}),
         help_text=_(
-            "Worked out from the start: as many days as the start's month has."
+            "Calculated from the equivalent Gregorian date used by payroll."
         ),
     )
     scope = forms.ChoiceField(
@@ -259,6 +260,8 @@ class PayrollBatchScopeForm(HorillaForm):
         for name in ("batch_name", "period_start", "period_end"):
             self.fields[name].widget.attrs.update({"class": "oh-input w-100"})
         self.fields["period_end"].widget.attrs["class"] = "oh-input w-100 pb__readonly"
+        self.fields["period_end"].widget.attrs["readonly"] = "readonly"
+        self.fields["period_end"].widget.attrs["data-nepali-datepicker"] = "false"
 
         if period and not self.is_bound:
             start, end = period

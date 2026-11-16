@@ -1,6 +1,7 @@
 {% extends 'index.html' %}
 {% load i18n %}
 {% load static %}
+{% load payroll_calendar %}
 
 {% block content %}
 <main :class="sidebarOpen ? 'oh-main__sidebar-visible' : ''">
@@ -62,7 +63,7 @@
             </div>
             <div class="pb__figure">
               <div class="pb__figure-label">{% trans "Pay date" %}</div>
-              <div class="pb__figure-value">{{ example_pay_date|date:"j M Y" }}</div>
+              <div class="pb__figure-value">{{ example_pay_date|payroll_date }}</div>
             </div>
             <div class="pb__aside-note">{% trans "Based on the saved settings. Save to see a change reflected here." %}</div>
           </div>

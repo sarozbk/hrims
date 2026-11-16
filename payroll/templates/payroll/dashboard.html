@@ -677,19 +677,19 @@ function pdInit() {
                 ? `<span class="pd-badge ${changeClass}">${changeIcon} ${Math.abs(data.change_pct)}%</span><span class="pd-kpi-card__vs">{% trans "vs"|escapejs %} ${data.prev_month} · ${fmtMoneyHtml(data.prev_net)}</span>`
                 : `<span class="pd-kpi-card__vs">{% trans "No paid payslips in"|escapejs %} ${data.prev_month}</span>`;
             document.getElementById('pd-kpi-grid').innerHTML = `
-                <a href="{% url 'view-payslip' %}?start_date_from=${fromInput.value}&start_date_till=${toInput.value}&filter_applied=1" class="pd-kpi-card">
+                <a href="{% url 'view-payslip' %}?start_date_from=${encodeURIComponent('AD:' + fromInput.value)}&start_date_till=${encodeURIComponent('AD:' + toInput.value)}&filter_applied=1" class="pd-kpi-card">
                     <div class="pd-kpi-card__icon pd-kpi-card__icon--green" style="font-weight:700;">${escHtml(CURRENCY_SYMBOL)}</div>
                     <div class="pd-kpi-card__label">{% trans "Net Payroll"|escapejs %}</div>
                     <div class="pd-kpi-card__value">${fmtMoneyHtml(data.total_net)}</div>
                     <div class="pd-kpi-card__sub pd-kpi-card__sub--compare">${netCompare}</div>
                 </a>
-                <a href="{% url 'view-payslip' %}?start_date_from=${fromInput.value}&start_date_till=${toInput.value}&filter_applied=1" class="pd-kpi-card">
+                <a href="{% url 'view-payslip' %}?start_date_from=${encodeURIComponent('AD:' + fromInput.value)}&start_date_till=${encodeURIComponent('AD:' + toInput.value)}&filter_applied=1" class="pd-kpi-card">
                     <div class="pd-kpi-card__icon pd-kpi-card__icon--blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg></div>
                     <div class="pd-kpi-card__label">{% trans "Gross Pay"|escapejs %}</div>
                     <div class="pd-kpi-card__value">${fmtMoneyHtml(data.total_gross)}</div>
                     <div class="pd-kpi-card__sub"><span class="pd-badge pd-badge--blue">${data.total_payslips} {% trans "Payslips"|escapejs %}</span></div>
                 </a>
-                <a href="{% url 'view-payslip' %}?start_date_from=${fromInput.value}&start_date_till=${toInput.value}&filter_applied=1" class="pd-kpi-card">
+                <a href="{% url 'view-payslip' %}?start_date_from=${encodeURIComponent('AD:' + fromInput.value)}&start_date_till=${encodeURIComponent('AD:' + toInput.value)}&filter_applied=1" class="pd-kpi-card">
                     <div class="pd-kpi-card__icon pd-kpi-card__icon--red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg></div>
                     <div class="pd-kpi-card__label">{% trans "Deductions"|escapejs %}</div>
                     <div class="pd-kpi-card__value">${fmtMoneyHtml(data.total_deductions)}</div>
@@ -720,7 +720,7 @@ function pdInit() {
             if (data.total === 0) { el.innerHTML = emptyHtml('{% trans "No payslips this month"|escapejs %}'); return; }
             const colors = { draft: 'rgba(148,163,184,0.15)', review_ongoing: 'rgba(59,130,246,0.15)', confirmed: 'rgba(245,158,11,0.15)', paid: 'rgba(34,197,94,0.15)' };
             el.innerHTML = '<div class="pd-pipeline">' + data.statuses.map(s =>
-                `<a href="{% url 'view-payslip' %}?status=${s.status}&start_date_from=${fromInput.value}&start_date_till=${toInput.value}&filter_applied=1" class="pd-pipeline-step" style="background:${colors[s.status]};">
+                `<a href="{% url 'view-payslip' %}?status=${s.status}&start_date_from=${encodeURIComponent('AD:' + fromInput.value)}&start_date_till=${encodeURIComponent('AD:' + toInput.value)}&filter_applied=1" class="pd-pipeline-step" style="background:${colors[s.status]};">
                     <div class="pd-pipeline-step__count pd-pipeline-step__count--${s.status}">${s.count}</div>
                     <div class="pd-pipeline-step__label">${s.label}</div>
                 </a>`
@@ -958,7 +958,7 @@ function pdInit() {
                 chart: { type: 'donut', height: 280, background: 'transparent', fontFamily: 'inherit',
                     events: { dataPointSelection: (e, ctx, opts) => {
                         const r = rows[opts.dataPointIndex];
-                        if (r && r.status !== 'remaining') window.location.href = "{% url 'view-payslip' %}?status=" + r.status + "&start_date_from=" + fromInput.value + "&start_date_till=" + toInput.value + "&filter_applied=1";
+                        if (r && r.status !== 'remaining') window.location.href = "{% url 'view-payslip' %}?status=" + r.status + "&start_date_from=" + encodeURIComponent("AD:" + fromInput.value) + "&start_date_till=" + encodeURIComponent("AD:" + toInput.value) + "&filter_applied=1";
                     }}
                 },
                 labels: rows.map(r => r.label),

@@ -23,7 +23,7 @@
       {{ form.title }} {{ form.title.errors }}
     </div>
 
-    {% if payslip_id is None %}
+    {% if payslip_id is None or payslip_id == "None" %}
       <div class="col-12 col-sm-12 col-md-12 col-lg-6">
         <label class="oh-label" for="id_date">{% trans "Date" %}</label>
         {{ form.date }} {{ form.date.errors }}
@@ -85,3 +85,5 @@
       });
     });
   </script>
+{% if payslip_id is None or payslip_id == "None" %}
+{% endif %}

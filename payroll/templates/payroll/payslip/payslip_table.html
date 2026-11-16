@@ -1,5 +1,5 @@
 {% load static %}
-{% load i18n horillafilters %}
+{% load i18n horillafilters payroll_calendar %}
 {% if messages %}
     <div class="oh-wrapper">
         {% for message in messages %}
@@ -92,11 +92,11 @@
                                     <span class="oh-profile__name oh-text--dark">{{payslip.employee_id}}</span>
                                 </div>
                             </div>
-                            <div data-cell-index="1" class="oh-sticky-table__td dateformat_changer">
-                                {{payslip.start_date}}
+                            <div data-cell-index="1" class="oh-sticky-table__td">
+                                {{ payslip.start_date|payroll_date }}
                             </div>
-                            <div data-cell-index="2" class="oh-sticky-table__td dateformat_changer">
-                                {{payslip.end_date}}
+                            <div data-cell-index="2" class="oh-sticky-table__td">
+                                {{ payslip.end_date|payroll_date }}
                             </div>
                             <div data-cell-index="4" class="oh-sticky-table__td">
                                 {{payslip.group_name}}

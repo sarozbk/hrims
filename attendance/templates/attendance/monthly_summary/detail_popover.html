@@ -208,6 +208,24 @@
     {% endif %}
   </div>
 
+{% elif metric == "traveling" %}
+  <div class="ms-pop-header" style="border-top:3px solid #0e7490;">
+    <ion-icon name="airplane-outline" style="color:#0e7490;"></ion-icon>
+    {% trans "Traveling" %}
+  </div>
+  <div class="ms-pop-body">
+    {% if records %}
+      {% for item in records %}
+      <div class="ms-pop-row">
+        <div><span class="ms-pop-date" style="color:#0e7490;">{{ item.destination }}</span>
+          <div class="ms-pop-badge">{{ item.departure_date|date:"d M Y" }} – {{ item.return_date|date:"d M Y" }}</div>
+          <div>{{ item.purpose|truncatechars:120 }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}<p class="ms-pop-empty">{% trans "No approved travel found." %}</p>{% endif %}
+  </div>
+
 {% elif metric == "paid_leave" %}
   <div class="ms-pop-header" style="border-top:3px solid #0d6efd;">
     <ion-icon name="calendar-outline" style="color:#0d6efd;"></ion-icon>

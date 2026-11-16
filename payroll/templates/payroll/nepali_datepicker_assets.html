@@ -1,0 +1,7 @@
+{% load static payroll_calendar %}
+{% nepali_calendar_is_enabled as nepali_calendar_enabled %}
+{% if nepali_calendar_enabled %}
+<link rel="stylesheet" href="{% static 'nepali_datepicker/nepali.datepicker.v5.0.2.min.css' %}">
+<script defer src="{% static 'nepali_datepicker/nepali.datepicker.v5.0.2.min.js' %}"></script>
+<script defer src="{% static 'payroll/nepali_datepicker.js' %}"></script>
+{% endif %}

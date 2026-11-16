@@ -2,6 +2,7 @@
 {% load i18n %}
 {% load static %}
 {% load horillafilters %}
+{% load payroll_calendar %}
 
 {% block content %}
 <main :class="sidebarOpen ? 'oh-main__sidebar-visible' : ''">
@@ -36,13 +37,13 @@
           <span class="pb__chip">
             <ion-icon name="calendar-outline"></ion-icon>
             <span class="pb__chip-label">{% trans "Period" %}</span>
-            {{ batch.period_start|date:"j M Y" }} &ndash; {{ batch.period_end|date:"j M Y" }}
+            {{ batch.period_start|payroll_date }} &ndash; {{ batch.period_end|payroll_date }}
           </span>
           {% if batch.pay_date %}
           <span class="pb__chip">
             <ion-icon name="cash-outline"></ion-icon>
             <span class="pb__chip-label">{% trans "Pay date" %}</span>
-            {{ batch.pay_date|date:"j M Y" }}
+            {{ batch.pay_date|payroll_date }}
           </span>
           {% endif %}
           {% if batch.created_by_user %}

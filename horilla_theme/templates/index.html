@@ -1,6 +1,8 @@
 {% load static %}
 {% load i18n %}
 {% load horillafilters %}
+{% load payroll_calendar %}
+{% nepali_calendar_is_enabled as nepali_calendar_enabled %}
 {% get_company as theme_obj %}
 <!DOCTYPE html>
 <html class="{% if request.session.theme == 'dark' %}dark{% endif %}">
@@ -286,6 +288,9 @@
         {% block styles %}
             <!-- Page-specific styles (optional) -->
         {% endblock %}
+        {% if nepali_calendar_enabled %}
+            {% include "payroll/nepali_datepicker_assets.html" %}
+        {% endif %}
     </head>
 
     <body class="bg-[{{theme_obj.primary_50}}] font-[Inter,_sans-serif] overflow-hidden {% if request.session.theme == 'dark' %}dark{% endif %}">

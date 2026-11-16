@@ -180,6 +180,11 @@
         </div>
       </div>
       <div class="dbx-kpi">
+        <div class="dbx-kpi-label"><i style="background:#0e7490;"></i>{% trans "Traveling" %}</div>
+        <div class="dbx-kpi-value" style="color:#0e7490;">{{ totals.total_traveling|floatformat:"-1" }}</div>
+        <div class="dbx-kpi-note">{% trans "Approved Official Travel" %}</div>
+      </div>
+      <div class="dbx-kpi">
         <div class="dbx-kpi-label"><i style="background:#2f6fba;"></i>{% trans "Paid Leave" %}</div>
         <div class="dbx-kpi-value" style="color:#2f6fba;">{{ totals.total_paid_leave|floatformat:"-1" }}</div>
         <div class="dbx-kpi-note">{% trans "Approved Time Off" %}</div>

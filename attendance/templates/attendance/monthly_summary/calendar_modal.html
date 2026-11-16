@@ -269,6 +269,7 @@
 .dark .cal-split--ahead { --cal-upcoming: #2a2a2a; }
 .cal-split--ahead { background: linear-gradient(135deg, var(--h1) 50%, var(--h2) 50%); color: #1e3a8a; }
 .cal-unpaid_leave { background: #fdba74; color: #7c2d12; }
+.cal-traveling    { background: #a5f3fc; color: #155e75; }
 .cal-week_off     { background: #c4b5fd; color: #4c1d95; }
 .cal-holiday      { background: #5eead4; color: #134e4a; }
 .cal-weekend      { background: #f1f5f9; color: #94a3b8; }
@@ -413,6 +414,10 @@
     <span class="cal-summary-val cal-stat-unpaid">{{ cal_summary.unpaid_leave }}</span>
     <span class="cal-summary-lbl">{% trans "Unpaid Leave" %}</span>
   </div>
+  <div class="cal-summary-item" data-group="traveling">
+    <span class="cal-summary-val" style="color:#0e7490;">{{ cal_summary.traveling }}</span>
+    <span class="cal-summary-lbl">{% trans "Traveling" %}</span>
+  </div>
   <div class="cal-summary-item" data-group="week_off">
     <span class="cal-summary-val cal-stat-weekoff">{{ cal_summary.week_off }}</span>
     <span class="cal-summary-lbl">{% trans "Week Off" %}</span>
@@ -533,6 +538,7 @@
   <div class="cal-legend-item"><div class="cal-legend-dot cal-absent"></div> {% trans "Absent / Missing Out / Short Hours" %}</div>
   <div class="cal-legend-item"><div class="cal-legend-dot cal-paid_leave"></div> {% trans "Paid Leave" %}</div>
   <div class="cal-legend-item"><div class="cal-legend-dot cal-unpaid_leave"></div> {% trans "Unpaid Leave" %}</div>
+  <div class="cal-legend-item"><div class="cal-legend-dot cal-traveling"></div> {% trans "Traveling" %}</div>
   <div class="cal-legend-item"><div class="cal-legend-dot cal-week_off"></div> {% trans "Week Off" %}</div>
   <div class="cal-legend-item"><div class="cal-legend-dot cal-holiday"></div> {% trans "Holiday" %}</div>
   <div class="cal-legend-item"><div class="cal-legend-dot cal-weekend"></div> {% trans "Upcoming (not counted)" %}</div>

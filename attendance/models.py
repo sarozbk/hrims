@@ -2194,6 +2194,7 @@ class AttendanceSummaryOverride(HorillaModel):
             + row.get("paid_leave", 0)
             + row.get("unpaid_leave", 0)
             + row.get("absent", 0)
+            + row.get("traveling_days", 0)
         )
         return row
 

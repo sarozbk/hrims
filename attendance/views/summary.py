@@ -532,6 +532,8 @@ def cell_groups(status, halves, conflict_with):
         groups.add("paid_leave")
     if status == "unpaid_leave":
         groups.add("unpaid_leave")
+    if status == "traveling":
+        groups.add("traveling")
     if status in ("week_off", "holiday"):
         groups.add(status)
     for code in halves or ():
@@ -614,6 +616,7 @@ _GROUP_SUM_KEYS = (
     "absent",
     "paid_leave",
     "unpaid_leave",
+    "traveling_days",
     "week_off",
     "holiday",
     "conflict_days",
@@ -945,6 +948,23 @@ def build_monthly_summary(from_date, to_date, employee_qs):
 
     all_leaves = list(chain(leave_qs, single_day_qs))
 
+    # Approved official travel is a separate attendance bucket. It is not leave,
+    # and it must not be counted as an unexplained absence.
+    from travel.models import TravelRequest
+
+    traveling_dates_per_emp = defaultdict(set)
+    for _travel in TravelRequest.objects.filter(
+        employee__in=emp_pks,
+        status="approved",
+        departure_date__lte=to_date,
+        return_date__gte=from_date,
+    ).values("employee_id", "departure_date", "return_date"):
+        for _d in _iter_dates(
+            max(_travel["departure_date"], from_date),
+            min(_travel["return_date"], to_date),
+        ):
+            traveling_dates_per_emp[_travel["employee_id"]].add(_d)
+
     # -- 3b. Roster-based week-off per employee (single DB hit); read before the leaves, which
     #        may exclude an employee's week-offs ------------------------------------------
     roster_qs = Roster.objects.filter(
@@ -1002,6 +1022,7 @@ def build_monthly_summary(from_date, to_date, employee_qs):
     # that is ~6 000 iterations; well within acceptable bounds.
     rows = []
     total_present = total_absent = total_paid = total_unpaid = total_week_off = 0.0
+    total_traveling = 0.0
     total_holiday = 0
     total_reg_holiday = total_reg_week_off = 0
     total_conflicts = 0
@@ -1044,6 +1065,7 @@ def build_monthly_summary(from_date, to_date, employee_qs):
         _daily_hrs = daily_manual_map.get(emp.pk, {})  # per-day manual overrides
 
         present = paid_leave = unpaid_leave = week_off = holiday_c = absent = 0.0
+        traveling_days = 0.0
         # Parts of ``absent``, kept apart so the summary can say what is in it: hours that fell
         # short of the shift, days with no clock-out (a missing punch), and days (or halves)
         # that have not happened yet.
@@ -1150,6 +1172,19 @@ def build_monthly_summary(from_date, to_date, employee_qs):
 
             # Legacy "attendance" / "leave" — fall through to natural
             # No resolution — natural computation
+
+            if (
+                d in traveling_dates_per_emp.get(emp.pk, set())
+                and d not in off_set
+                and d not in holiday_dates_set
+                and d not in _emp_off
+            ):
+                traveling_days += 1.0
+                _day_manual = _daily_hrs.get(d)
+                hours_second += (
+                    _day_manual if _day_manual is not None else _att_secs.get(d, 0)
+                )
+                continue
 
             # Half-day leave: the leave covers its half. The other half is present when the
             # attendance reaches it, otherwise absent (half leave + half absent).
@@ -1304,6 +1339,7 @@ def build_monthly_summary(from_date, to_date, employee_qs):
                 "paid_leave": paid_leave if paid_leave % 1 else int(paid_leave),
                 "unpaid_leave": unpaid_leave if unpaid_leave % 1 else int(unpaid_leave),
                 "absent": absent,
+                "traveling_days": traveling_days,
                 "short_hours": short_hours,
                 "missing_punches": missing_punches,
                 "upcoming_days": upcoming_days,
@@ -1319,7 +1355,7 @@ def build_monthly_summary(from_date, to_date, employee_qs):
                 # default the two disagree, and a row that does not reconcile
                 # with itself is unreadable. Derived from the same buckets, so
                 # by construction it always adds up.
-                "working_days": present + paid_leave + unpaid_leave + absent,
+                "working_days": present + paid_leave + unpaid_leave + absent + traveling_days,
                 "conflict_days": conflict_days,
                 "resolved_conflicts": resolved_conflicts,
                 "unresolved_conflicts": conflict_days - resolved_conflicts,
@@ -1351,6 +1387,7 @@ def build_monthly_summary(from_date, to_date, employee_qs):
 
         total_present += present
         total_absent += absent
+        total_traveling += traveling_days
         total_paid += paid_leave
         total_unpaid += unpaid_leave
         total_week_off += week_off
@@ -1388,6 +1425,7 @@ def build_monthly_summary(from_date, to_date, employee_qs):
 
         total_present = sum(r["present"] for r in rows)
         total_absent = sum(r["absent"] for r in rows)
+        total_traveling = sum(r["traveling_days"] for r in rows)
         total_paid = sum(r["paid_leave"] for r in rows)
         total_unpaid = sum(r["unpaid_leave"] for r in rows)
         total_conflicts = sum(r["unresolved_conflicts"] for r in rows)
@@ -1396,6 +1434,7 @@ def build_monthly_summary(from_date, to_date, employee_qs):
         "total_employees": len(rows),
         "total_present": total_present,
         "total_absent": total_absent,
+        "total_traveling": total_traveling,
         "total_paid_leave": total_paid,
         "total_unpaid_leave": total_unpaid,
         "week_off": total_week_off,
@@ -1591,7 +1630,8 @@ def _render_dashboard(request, employee_qs, from_date, to_date):
     absent = totals["total_absent"]
     paid = totals["total_paid_leave"]
     unpaid = totals["total_unpaid_leave"]
-    scheduled = present + absent + paid + unpaid
+    traveling = totals["total_traveling"]
+    scheduled = present + absent + paid + unpaid + traveling
     short_hours = sum(row["short_hours"] for row in rows)
     missing = sum(row["missing_punches"] for row in rows)
     upcoming = sum(row["upcoming_days"] for row in rows)
@@ -1599,6 +1639,7 @@ def _render_dashboard(request, employee_qs, from_date, to_date):
     mix = [
         {"key": "present", "label": _("Present"), "value": present, "color": "#059669"},
         {"key": "absent", "label": _("Absent"), "value": absent, "color": "#dc2626"},
+        {"key": "traveling", "label": _("Traveling"), "value": traveling, "color": "#0e7490"},
         {"key": "paid", "label": _("Paid Leave"), "value": paid, "color": "#2f6fba"},
         {
             "key": "unpaid",
@@ -1643,7 +1684,7 @@ def _render_dashboard(request, employee_qs, from_date, to_date):
     ]
     for part in absent_parts:
         part["percent"] = round(_share(part["value"], scheduled) * 100)
-    slices = [mix[0], *absent_parts, mix[2], mix[3]]
+    slices = [mix[0], *absent_parts, mix[2], mix[3], mix[4]]
     used = 0.0
     group_start = group_share = 0.0
     for item in slices:
@@ -1672,7 +1713,7 @@ def _render_dashboard(request, employee_qs, from_date, to_date):
         ) or str(_("No Department"))
         bucket = by_dept.setdefault(name, {"absent": 0.0, "scheduled": 0.0})
         row_scheduled = (
-            row["present"] + row["absent"] + row["paid_leave"] + row["unpaid_leave"]
+            row["present"] + row["absent"] + row["paid_leave"] + row["unpaid_leave"] + row["traveling_days"]
         )
         bucket["absent"] += row["absent"]
         bucket["scheduled"] += row_scheduled
@@ -1738,6 +1779,7 @@ _DAILY_CODES = {
     "absent": "A",
     "paid_leave": "PL",
     "unpaid_leave": "UL",
+    "traveling": "TR",
     "week_off": "WO",
     "holiday": "H",
     "weekend": "WO",
@@ -1755,6 +1797,7 @@ def _daily_status_labels():
         "absent": _("Absent"),
         "paid_leave": _("Paid Leave"),
         "unpaid_leave": _("Unpaid Leave"),
+        "traveling": _("Traveling"),
         "week_off": _("Week Off"),
         "holiday": _("Holiday"),
         "weekend": _("Week Off"),
@@ -1947,6 +1990,7 @@ def attendance_monthly_summary_table(request):
         "department": _dept_name,
         "present": lambda r: r["present"],
         "absent": lambda r: r["absent"],
+        "traveling": lambda r: r["traveling_days"],
         "paid_leave": lambda r: r["paid_leave"],
         "unpaid_leave": lambda r: r["unpaid_leave"],
         "week_off": lambda r: r["week_off"],
@@ -2068,6 +2112,7 @@ def attendance_monthly_summary_export(request):
                 or "",
                 str(_("Present Days")): row["present"],
                 str(_("Absent Days")): row["absent"],
+                str(_("Traveling Days")): row["traveling_days"],
                 str(_("Paid Leave Days")): row["paid_leave"],
                 str(_("Unpaid Leave Days")): row["unpaid_leave"],
                 str(_("Working Days")): total_working,
@@ -2084,6 +2129,7 @@ def attendance_monthly_summary_export(request):
         str(_("Designation")),
         str(_("Present Days")),
         str(_("Absent Days")),
+        str(_("Traveling Days")),
         str(_("Paid Leave Days")),
         str(_("Unpaid Leave Days")),
         str(_("Working Days")),
@@ -2392,18 +2438,34 @@ def attendance_monthly_summary_detail(request):
             _leaves, from_date, to_date, _hol, _wo
         )
         leave_dates = {d for d in (_paid_full | _unpaid_full) if d not in off_set}
+        from travel.models import TravelRequest
+
+        travel_dates = set()
+        for _travel in TravelRequest.objects.filter(
+            employee=emp,
+            status="approved",
+            departure_date__lte=to_date,
+            return_date__gte=from_date,
+        ).values("departure_date", "return_date"):
+            travel_dates.update(
+                _iter_dates(
+                    max(_travel["departure_date"], from_date),
+                    min(_travel["return_date"], to_date),
+                )
+            )
         # Half-day leave with no attendance for the rest of the day: that half is absent.
         _half_absent_days = {
             d
             for d, p in _part.items()
             if p[0] + p[1] < 1
             and d not in off_set
+            and d not in travel_dates
             and d not in present_dates
             and d <= datetime.date.today()
         }
 
         # Base absent set: working days with no attendance and no approved leave
-        _absent_set = working_dates - present_dates - leave_dates
+        _absent_set = working_dates - present_dates - leave_dates - travel_dates
         # Also include days where resolution="absent" (attendance present but overridden)
         for _d, _res in resolution_map.items():
             if _res == "absent" and _d in present_dates:
@@ -2452,6 +2514,7 @@ def attendance_monthly_summary_detail(request):
                 and _d not in off_set
                 and _d not in _holiday_abs
                 and _d not in leave_dates
+                and _d not in travel_dates
                 and _d not in _part
                 and _worked < max(0, _min - _grace_abs) / 2
             ):
@@ -2716,6 +2779,16 @@ def attendance_monthly_summary_detail(request):
             )
         context["records"] = holiday_objs
 
+    elif metric == "traveling":
+        from travel.models import TravelRequest
+
+        context["records"] = TravelRequest.objects.filter(
+            employee=emp,
+            status="approved",
+            departure_date__lte=to_date,
+            return_date__gte=from_date,
+        ).order_by("departure_date")
+
     return render(request, "attendance/monthly_summary/detail_popover.html", context)
 
 
@@ -2779,6 +2852,20 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
         end_date__isnull=True,
     ).select_related("leave_type_id")
     leaves = list(chain(qs_range, qs_single))
+    from travel.models import TravelRequest
+
+    travel_map = {}
+    for _travel in TravelRequest.objects.filter(
+        employee=emp,
+        status="approved",
+        departure_date__lte=leave_to,
+        return_date__gte=from_date,
+    ):
+        for _d in _iter_dates(
+            max(_travel.departure_date, from_date),
+            min(_travel.return_date, leave_to),
+        ):
+            travel_map[_d] = f"{_('Traveling')}: {_travel.destination}"
     _hol, _wo = exclusion_sets(emp, from_date, leave_to)
     part_leave, paid_full, unpaid_full = partial_leave_days(
         leaves, from_date, leave_to, _hol, _wo
@@ -2938,6 +3025,9 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
         }
         if resolution in _direct:
             return _direct[resolution]
+
+        if d in travel_map and d not in holiday_map and d not in week_off_dates:
+            return "traveling", travel_map[d], None, None, False
 
         if d in att_map:
             r = att_map[d]
@@ -3111,6 +3201,7 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
                             or d in unpaid_map
                             or d in holiday_map
                             or d in week_off_dates
+                            or d in travel_map
                         )
                     )
                     if d < from_date or (d > to_date and not future_leave):
@@ -3262,6 +3353,7 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
         "half_absent": 0,
         "split": 0,
         "absent": 0,
+        "traveling": 0,
         "present": 0,
         "paid_leave": 0,
         "unpaid_leave": 0,
@@ -3632,6 +3724,19 @@ def attendance_monthly_summary_conflict_resolve(request):
         if _is_week_off:
             conflict_type = "week_off_ot" if att_row else "week_off"
 
+    if not conflict_type and not att_row:
+        from travel.models import TravelRequest
+
+        _travel = TravelRequest.objects.filter(
+            employee=emp,
+            status="approved",
+            departure_date__lte=date,
+            return_date__gte=date,
+        ).first()
+        if _travel:
+            conflict_type = "traveling"
+            conflict_label = f"{_('Traveling')}: {_travel.destination}"
+
     # Overall day status for display purposes — computed independently of
     # any AttendanceConflictResolution, so it always reflects the "natural"
     # (pre-override) status. Used as the "from" side of the from → to
@@ -3656,6 +3761,8 @@ def attendance_monthly_summary_conflict_resolve(request):
         day_status = day_type
     elif conflict_type in ("paid_leave", "unpaid_leave"):
         day_status = conflict_type
+    elif conflict_type == "traveling":
+        day_status = "traveling"
     elif conflict_type == "holiday":
         day_status = "holiday"
     elif conflict_type == "week_off":
@@ -3675,6 +3782,7 @@ def attendance_monthly_summary_conflict_resolve(request):
         "mo": _("Missing Clock-out"),
         "paid_leave": _("Paid Leave"),
         "unpaid_leave": _("Unpaid Leave"),
+        "traveling": _("Traveling"),
         "holiday": _("Holiday"),
         "week_off": _("Week Off"),
         "weekend": _("Weekend"),
@@ -3698,6 +3806,7 @@ def attendance_monthly_summary_conflict_resolve(request):
         "absent": ("#fee2e2", "#991b1b"),
         "paid_leave": ("#dbeafe", "#1e40af"),
         "unpaid_leave": ("#ffedd5", "#9a3412"),
+        "traveling": ("#cffafe", "#155e75"),
         "holiday": ("#ccfbf1", "#134e4a"),
         "week_off": ("#ede9fe", "#4c1d95"),
         "weekend": ("#f1f5f9", "#64748b"),

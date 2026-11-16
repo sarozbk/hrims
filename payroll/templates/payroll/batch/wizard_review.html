@@ -1,6 +1,7 @@
 {% extends 'index.html' %}
 {% load i18n %}
 {% load static %}
+{% load payroll_calendar %}
 
 {% block content %}
 <main :class="sidebarOpen ? 'oh-main__sidebar-visible' : ''">
@@ -28,7 +29,7 @@
       <div>
         <h1 class="oh-main__titlebar-title fw-bold mb-0">{{ batch_name }}</h1>
         <div style="font-size:.8rem;color:#6b7280;">
-          {{ period_start|date:"j M Y" }} &ndash; {{ period_end|date:"j M Y" }}
+          {{ period_start|payroll_date }} &ndash; {{ period_end|payroll_date }}
         </div>
       </div>
       {% comment %}The review refreshes itself when a contract or the attendance is saved from it, so there is no Re-check.{% endcomment %}

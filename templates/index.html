@@ -2,6 +2,8 @@
 {% load i18n %}
 {% load horillafilters %}
 {% load basefilters %}
+{% load payroll_calendar %}
+{% nepali_calendar_is_enabled as nepali_calendar_enabled %}
 {% show_section as show_section %}
 <!DOCTYPE html>
 <html>
@@ -54,6 +56,9 @@
     <!-- Bootstrap JS -->
     {% block styles %}
     {% endblock styles %}
+    {% if nepali_calendar_enabled %}
+        {% include "payroll/nepali_datepicker_assets.html" %}
+    {% endif %}
 </head>
 
 

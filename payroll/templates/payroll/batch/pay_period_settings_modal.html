@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 {% include "payroll/batch/_batch.css.html" %}
 {# The pay period setting as a form for a modal: saved in place, then the page it was opened from reloads. #}
 <div class="oh-modal__dialog-header">
@@ -17,7 +17,7 @@
 
     <div class="pb__example" id="pb-example" data-today="{{ today|date:'Y-m-d' }}">
       <div><span class="pb__example-k">{% trans "This period" %}</span><br><b id="pb-example-period">{{ example_start|date:"j M Y" }} &ndash; {{ example_end|date:"j M Y" }}</b></div>
-      <div><span class="pb__example-k">{% trans "Pay date" %}</span><br><b id="pb-example-pay">{{ example_pay_date|date:"j M Y" }}</b></div>
+      <div><span class="pb__example-k">{% trans "Pay date" %}</span><br><b id="pb-example-pay">{{ example_pay_date|payroll_date }}</b></div>
     </div>
 
     <div class="oh-input-group">

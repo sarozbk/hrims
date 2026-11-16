@@ -40,6 +40,15 @@ from payroll.models.models import (
 )
 from payroll.models.payroll_batch import PayPeriodSettings, PayrollBatch
 from payroll.models.tax_models import TaxBracket
+from payroll.nepali_calendar import BikramSambatDateField, BikramSambatDateInput
+
+
+class BikramSambatDateFilter(django_filters.DateFilter):
+    field_class = BikramSambatDateField
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("widget", BikramSambatDateInput())
+        super().__init__(*args, **kwargs)
 
 
 class ContractFilter(HorillaFilterSet):
@@ -462,23 +471,19 @@ class PayslipFilter(HorillaFilterSet):
             return queryset
         return filter_by_name(queryset, name, value)
 
-    start_date_from = django_filters.DateFilter(
-        widget=forms.DateInput(attrs={"type": "date"}),
+    start_date_from = BikramSambatDateFilter(
         field_name="start_date",
         lookup_expr="gte",
     )
-    start_date_till = django_filters.DateFilter(
-        widget=forms.DateInput(attrs={"type": "date"}),
+    start_date_till = BikramSambatDateFilter(
         field_name="start_date",
         lookup_expr="lte",
     )
-    end_date_from = django_filters.DateFilter(
-        widget=forms.DateInput(attrs={"type": "date"}),
+    end_date_from = BikramSambatDateFilter(
         field_name="end_date",
         lookup_expr="gte",
     )
-    end_date_till = django_filters.DateFilter(
-        widget=forms.DateInput(attrs={"type": "date"}),
+    end_date_till = BikramSambatDateFilter(
         field_name="end_date",
         lookup_expr="lte",
     )
@@ -1069,25 +1074,21 @@ class PayrollBatchFilter(HorillaFilterSet):
 
     search = django_filters.CharFilter(method="filter_search")
     status = django_filters.ChoiceFilter(choices=PayrollBatch.STATUS_CHOICES)
-    period_start_from = django_filters.DateFilter(
+    period_start_from = BikramSambatDateFilter(
         field_name="period_start",
         lookup_expr="gte",
-        widget=forms.DateInput(attrs={"type": "date"}),
     )
-    period_end_till = django_filters.DateFilter(
+    period_end_till = BikramSambatDateFilter(
         field_name="period_end",
         lookup_expr="lte",
-        widget=forms.DateInput(attrs={"type": "date"}),
     )
-    pay_date_from = django_filters.DateFilter(
+    pay_date_from = BikramSambatDateFilter(
         field_name="pay_date",
         lookup_expr="gte",
-        widget=forms.DateInput(attrs={"type": "date"}),
     )
-    pay_date_till = django_filters.DateFilter(
+    pay_date_till = BikramSambatDateFilter(
         field_name="pay_date",
         lookup_expr="lte",
-        widget=forms.DateInput(attrs={"type": "date"}),
     )
 
     class Meta:

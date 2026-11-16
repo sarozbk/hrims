@@ -1,4 +1,4 @@
-{% load i18n %}
+{% load i18n payroll_calendar %}
 {% comment %}
 Editing a generated payslip's components, with a live preview.
 
@@ -151,7 +151,7 @@ previewed is what gets written.
       {% trans "Edit payslip components" %}
     </span>
     <div class="pe__head-sub">
-      {{ payslip.employee_id }} &middot; {{ payslip.start_date }} &ndash; {{ payslip.end_date }}
+      {{ payslip.employee_id }} &middot; {{ payslip.start_date|payroll_date }} &ndash; {{ payslip.end_date|payroll_date }}
     </div>
     <div class="pe__head-sub">
       {% trans "Change any amount, or tick a line to leave it off this payslip." %}

@@ -121,6 +121,7 @@ APScheduler==3.11.3
 
 # Date & time
 python-dateutil==2.9.0.post0
+nepali-datetime==1.0.8.5
 pytz==2026.3.post1
 
 # Internationalization & NLP

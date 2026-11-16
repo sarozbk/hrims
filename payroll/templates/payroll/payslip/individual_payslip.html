@@ -1,4 +1,4 @@
-{% extends 'index.html' %} {% block content %} {% load i18n static %}
+{% extends 'index.html' %} {% block content %} {% load i18n static payroll_calendar %}
 <style>
   .sent-to-employee{
     background-color: yellowgreen;
@@ -43,9 +43,9 @@
       <h1 class="oh-payslip__title oh-payslip__title--h1">
         {% trans "Payslip" %}
       </h1>
-      <span class="oh-payslip__title oh-payslip__title--h2 dateformat_changer">{{start_date}}</span> &nbsp
+      <span class="oh-payslip__title oh-payslip__title--h2">{{ start_date|payroll_date }}</span> &nbsp
       <span class="oh-payslip__title oh-payslip__title--h2">{% trans "to" %}</span> &nbsp
-      <span class="oh-payslip__title oh-payslip__title--h2 dateformat_changer">{{end_date}}</span>
+      <span class="oh-payslip__title oh-payslip__title--h2">{{ end_date|payroll_date }}</span>
     </div>
     <div class="oh-payslip__header-left">
       {% with resolved_company=employee.employee_work_info.company_id|default:company %}

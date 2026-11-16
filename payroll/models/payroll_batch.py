@@ -168,7 +168,9 @@ class PayPeriodSettings(HorillaModel):
 
     @staticmethod
     def _span(start, end):
-        return f"{start.day} {start:%b %Y} \u2013 {end.day} {end:%b %Y}"
+        from payroll.nepali_calendar import format_payroll_date
+
+        return f"{format_payroll_date(start)} \u2013 {format_payroll_date(end)}"
 
     def next_auto_run(self, today=None):
         """``(start, end, run_date)``: the period automatic generation does next, and when."""
@@ -198,13 +200,14 @@ class PayPeriodSettings(HorillaModel):
 
     def auto_generate_display(self):
         from django.utils.html import format_html
+        from payroll.nepali_calendar import format_payroll_date
 
         if not self.auto_generate:
             return _("Off")
         start, end, run = self.next_auto_run()
         text = _("Generates payslips for %(period)s on %(run)s.") % {
             "period": self._span(start, end),
-            "run": f"{run.day} {run:%b %Y}",
+            "run": format_payroll_date(run),
         }
         return format_html(
             '<span class="pp-tip">{}<span class="pp-tip__body">{}</span></span>',
@@ -554,8 +557,10 @@ class PayrollBatch(HorillaModel):
 
     # -- columns of the runs list (payroll.cbv.payroll_batch) --------------
     def period_display(self):
+        from payroll.nepali_calendar import format_payroll_date
+
         start, end = self.period_start, self.period_end
-        return f"{start.day} {start:%b} – {end.day} {end:%b %Y}"
+        return f"{format_payroll_date(start)} – {format_payroll_date(end)}"
 
     def get_detail_url(self):
         from django.urls import reverse
@@ -573,7 +578,11 @@ class PayrollBatch(HorillaModel):
         return self.active_payslip_count
 
     def pay_date_display(self):
-        return f"{self.pay_date:%d %b %Y}" if self.pay_date else "—"
+        if not self.pay_date:
+            return "—"
+        from payroll.nepali_calendar import format_payroll_date
+
+        return format_payroll_date(self.pay_date, pad_day=True)
 
     def _money(self, amount):
         from horilla_views.cbv_methods import render_template

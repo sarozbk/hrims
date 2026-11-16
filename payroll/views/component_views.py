@@ -18,8 +18,15 @@ import pandas as pd
 from django.apps import apps
 from django.conf import settings
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.db.models import Sum
-from django.http import HttpResponse, HttpResponseRedirect, JsonResponse, QueryDict
+from django.http import (
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseRedirect,
+    JsonResponse,
+    QueryDict,
+)
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.html import format_html
@@ -74,6 +81,7 @@ from payroll.methods.payroll_run import (  # noqa: F401  (re-exported for caller
     payroll_calculation,
 )
 from payroll.methods.tax_calc import TaxComputationError
+from payroll.nepali_calendar import BikramSambatDateField
 from payroll.models.models import (
     Allowance,
     Contract,
@@ -891,12 +899,18 @@ def check_contract_start_date(request):
 
     employee_id = request.GET.get("employee_id")
     start_date = request.GET.get("start_date")
+    if not start_date:
+        return HttpResponse("")
+    try:
+        start_date = BikramSambatDateField().clean(start_date)
+    except ValidationError as error:
+        return HttpResponseBadRequest("; ".join(error.messages))
 
     contract = Contract.objects.filter(
         employee_id=employee_id, contract_status="active"
     ).first()
 
-    if not contract or start_date >= str(contract.contract_start_date):
+    if not contract or start_date >= contract.contract_start_date:
         return HttpResponse("")
 
     title_message = _(

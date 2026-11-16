@@ -4,6 +4,7 @@
     data-calendar-url="{% url 'attendance-monthly-summary-calendar' %}?employee_id={{ row.employee.pk }}&from_date={{ from_date }}&to_date={{ to_date }}"
     data-present="{{ row.present }}"
     data-absent="{{ row.absent }}"
+    data-traveling="{{ row.traveling_days }}"
     data-paid="{{ row.paid_leave }}"
     data-unpaid="{{ row.unpaid_leave }}"
     data-weekoff="{{ row.week_off }}"
@@ -45,6 +46,8 @@
       data-url="{% url 'attendance-monthly-summary-detail' %}?employee_id={{ row.employee.pk }}&from_date={{ from_date }}&to_date={{ to_date }}&metric=present">{{ row.present|floatformat:"-1" }}</td>
   <td class="ms-metric-cell" style="text-align:center;font-weight:600;"
       data-url="{% url 'attendance-monthly-summary-detail' %}?employee_id={{ row.employee.pk }}&from_date={{ from_date }}&to_date={{ to_date }}&metric=absent">{{ row.absent|floatformat:"-1" }}</td>
+  <td class="ms-metric-cell" style="text-align:center;font-weight:600;color:#0e7490;"
+      data-url="{% url 'attendance-monthly-summary-detail' %}?employee_id={{ row.employee.pk }}&from_date={{ from_date }}&to_date={{ to_date }}&metric=traveling">{{ row.traveling_days|floatformat:"-1" }}</td>
   <td class="ms-metric-cell" style="text-align:center;font-weight:600;"
       data-url="{% url 'attendance-monthly-summary-detail' %}?employee_id={{ row.employee.pk }}&from_date={{ from_date }}&to_date={{ to_date }}&metric=paid_leave">{{ row.paid_leave }}</td>
   <td class="ms-metric-cell" style="text-align:center;font-weight:600;"

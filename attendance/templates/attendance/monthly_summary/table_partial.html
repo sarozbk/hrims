@@ -669,6 +669,11 @@ reloadSelectedCount($('.count_msAttendance'),'selectedInstances');">
             <span class="oh-column-config__label">{% trans "Absent" %}</span>
             <span class="oh-table__checkbox"><input type="checkbox" class="custom-checkbox ms-col-toggle" data-col="absent" checked></span>
           </li>
+          <li class="oh-column-config__item is-draggable" data-label="{% trans 'Traveling' %}">
+            <span class="oh-column-config__handle" aria-hidden="true"><ion-icon name="reorder-two-outline"></ion-icon></span>
+            <span class="oh-column-config__label">{% trans "Traveling" %}</span>
+            <span class="oh-table__checkbox"><input type="checkbox" class="custom-checkbox ms-col-toggle" data-col="traveling" checked></span>
+          </li>
           <li class="oh-column-config__item is-draggable" data-label="{% trans 'Paid Leave' %}">
             <span class="oh-column-config__handle" aria-hidden="true"><ion-icon name="reorder-two-outline"></ion-icon></span>
             <span class="oh-column-config__label">{% trans "Paid Leave" %}</span>
@@ -844,6 +849,7 @@ reloadSelectedCount($('.count_msAttendance'),'selectedInstances');">
                 <span>{% trans "Absent" %}</span>
               </div>
             </th>
+            <th data-col="traveling" style="text-align:center;">{% trans "Traveling" %}</th>
             <th data-col="paid_leave" style="text-align:center;">
               <div class="flex gap-1.5 items-center justify-center cursor-pointer"
                    hx-get="{% url 'attendance-monthly-summary-table' %}?{{ pd }}&sort=paid_leave&dir={% if sort_key == 'paid_leave' and sort_dir == 'asc' %}desc{% else %}asc{% endif %}"

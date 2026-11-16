@@ -22,14 +22,24 @@ a document-wide lookup, and a missing field reading as false — because either
 one silently hides fields with nothing in the console to point at.
 """
 
+from datetime import date
 from pathlib import Path
 
 from django import forms
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from horilla.testkit import make_company, make_employee, make_user
-from payroll.forms.component_forms import AllowanceForm, DeductionForm
+from payroll.forms.component_forms import (
+    AllowanceForm,
+    BonusForm,
+    DeductionForm,
+    LoanAccountForm,
+    PayAdjustmentBulkForm,
+    PayAdjustmentForm,
+    PayslipAllowanceForm,
+    ReimbursementForm,
+)
 from payroll.forms.component_layout import (
     HIDDEN_FIELDS,
     STEPS,
@@ -37,6 +47,7 @@ from payroll.forms.component_layout import (
     steps_for,
     unplaced_field_names,
 )
+from payroll.templatetags.payroll_calendar import has_nepali_date_input
 
 # Anchored to the repository, not the working directory, so the suite reads the
 # real files wherever it is started from.
@@ -115,6 +126,40 @@ class BasedOnGroupingTests(TestCase):
                 offered = set(self._flatten(form_class().fields["based_on"].choices))
                 declared = {value for value, _label in model.based_on_choice}
                 self.assertTrue(declared <= offered, declared - offered)
+
+
+class ComponentNepaliDateTests(SimpleTestCase):
+    @override_settings(NEPALI_CALENDAR=True)
+    def test_editable_component_dates_accept_and_render_bikram_sambat(self):
+        fields = {
+            "allowance": AllowanceForm.base_fields["one_time_date"],
+            "deduction": DeductionForm.base_fields["one_time_date"],
+            "bonus": BonusForm.base_fields["date"],
+            "loan_provided": LoanAccountForm.base_fields["provided_date"],
+            "loan_installment": LoanAccountForm.base_fields[
+                "installment_start_date"
+            ],
+            "reimbursement": ReimbursementForm.base_fields["allowance_on"],
+            "pay_adjustment": PayAdjustmentForm.base_fields["pay_date"],
+            "pay_adjustment_bulk": PayAdjustmentBulkForm.base_fields["pay_date"],
+        }
+        for name, field in fields.items():
+            with self.subTest(field=name):
+                self.assertEqual(field.clean("2083-01-01"), date(2026, 4, 14))
+                rendered = field.widget.render(name, date(2026, 4, 14))
+                self.assertIn('value="2083-01-01"', rendered)
+                self.assertIn('data-nepali-datepicker="true"', rendered)
+
+    @override_settings(NEPALI_CALENDAR=True)
+    def test_payslip_bonus_hidden_date_remains_gregorian(self):
+        field = PayslipAllowanceForm.base_fields["date"]
+
+        self.assertEqual(field.clean("2026-04-14"), date(2026, 4, 14))
+
+    @override_settings(NEPALI_CALENDAR=True)
+    def test_picker_is_only_requested_for_visible_nepali_date_fields(self):
+        self.assertTrue(has_nepali_date_input(BonusForm()))
+        self.assertFalse(has_nepali_date_input(PayslipAllowanceForm()))
 
 
 class StepTests(TestCase):

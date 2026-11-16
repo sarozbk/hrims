@@ -42,6 +42,7 @@ from payroll.models.models import (
     ReimbursementMultipleAttachment,
     SalaryStructure,
 )
+from payroll.nepali_calendar import BikramSambatDateField, BikramSambatDateInput
 from payroll.widgets import component_widgets as widget
 
 logger = logging.getLogger(__name__)
@@ -881,6 +882,7 @@ class AllowanceForm(AppliesByFormMixin, ModelForm):
         model = payroll.models.models.Allowance
         fields = "__all__"
         exclude = ["is_active"]
+        field_classes = {"one_time_date": BikramSambatDateField}
 
     def __init__(self, *args, **kwargs):
         if instance := kwargs.get("instance"):
@@ -889,7 +891,7 @@ class AllowanceForm(AppliesByFormMixin, ModelForm):
             initial = {}
             if instance.one_time_date is not None:
                 initial = {
-                    "one_time_date": instance.one_time_date.strftime("%Y-%m-%d"),
+                    "one_time_date": instance.one_time_date,
                 }
             kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
@@ -1033,9 +1035,7 @@ class DeductionForm(AppliesByFormMixin, ModelForm):
         model = payroll.models.models.Deduction
         fields = "__all__"
         exclude = ["is_active"]
-        widgets = {
-            "one_time_date": forms.DateTimeInput(attrs={"type": "date"}),
-        }
+        field_classes = {"one_time_date": BikramSambatDateField}
 
     def __init__(self, *args, **kwargs):
         if instance := kwargs.get("instance"):
@@ -1044,7 +1044,7 @@ class DeductionForm(AppliesByFormMixin, ModelForm):
             initial = {}
             if instance.one_time_date is not None:
                 initial = {
-                    "one_time_date": instance.one_time_date.strftime("%Y-%m-%d"),
+                    "one_time_date": instance.one_time_date,
                 }
             kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
@@ -1376,6 +1376,8 @@ class PayslipForm(ModelForm):
         "start_date": 12,
         "end_date": 12,
     }
+    start_date = BikramSambatDateField()
+    end_date = BikramSambatDateField()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1386,6 +1388,15 @@ class PayslipForm(ModelForm):
             if contract.employee_id.is_active
         ]
         self.fields["employee_id"].widget.attrs.update(
+            {
+                "hx-get": "/payroll/check-contract-start-date",
+                "hx-target": "#contractStartDateDiv",
+                "hx-include": "#payslipCreateForm",
+                "hx-trigger": "change delay:300ms",
+                "hx-swap": "innerHTML",
+            }
+        )
+        self.fields["start_date"].widget.attrs.update(
             {
                 "hx-get": "/payroll/check-contract-start-date",
                 "hx-target": "#contractStartDateDiv",
@@ -1410,23 +1421,6 @@ class PayslipForm(ModelForm):
             "end_date",
         ]
         exclude = ["is_active"]
-        widgets = {
-            "start_date": forms.DateInput(
-                attrs={
-                    "type": "date",
-                    "hx-get": "/payroll/check-contract-start-date",
-                    "hx-target": "#contractStartDateDiv",
-                    "hx-include": "#payslipCreateForm",
-                    "hx-trigger": "change delay:300ms",
-                    "hx-swap": "innerHTML",
-                }
-            ),
-            "end_date": forms.DateInput(
-                attrs={
-                    "type": "date",
-                }
-            ),
-        }
 
 
 class GeneratePayslipForm(HorillaForm):
@@ -1450,13 +1444,15 @@ class GeneratePayslipForm(HorillaForm):
         label="Employee",
         required=True,
     )
-    start_date = forms.DateField(widget=forms.DateInput(attrs={"type": "date"}))
-    end_date = forms.DateField(widget=forms.DateInput(attrs={"type": "date"}))
+    start_date = BikramSambatDateField()
+    end_date = BikramSambatDateField()
 
     def clean(self):
         cleaned_data = super().clean()
         start_date = cleaned_data.get("start_date")
         end_date = cleaned_data.get("end_date")
+        if not start_date or not end_date:
+            return cleaned_data
 
         today = datetime.date.today()
         if end_date < start_date:
@@ -1491,16 +1487,6 @@ class GeneratePayslipForm(HorillaForm):
         self.fields["end_date"].widget.attrs.update({"class": "oh-input w-100"})
         self.initial["start_date"] = datetime.date.today().replace(day=1)
         self.initial["end_date"] = datetime.date.today()
-
-    class Meta:
-        """
-        Meta class for additional options
-        """
-
-        widgets = {
-            "start_date": forms.DateInput(attrs={"type": "date"}),
-            "end_date": forms.DateInput(attrs={"type": "date"}),
-        }
 
 
 class PayrollSettingsForm(ModelForm):
@@ -1601,7 +1587,7 @@ class BonusForm(Form):
     """
 
     title = forms.CharField(max_length=100)
-    date = forms.DateField(widget=forms.DateInput(), required=False)
+    date = BikramSambatDateField(required=False)
     employee_id = forms.IntegerField(label="Employee", widget=forms.HiddenInput())
     is_fixed = forms.BooleanField(
         label="Fixed", initial=True, required=False, widget=forms.CheckboxInput()
@@ -1645,13 +1631,12 @@ class BonusForm(Form):
         super().__init__(*args, **kwargs)
         for field_name, field in self.fields.items():
             field.widget.attrs.update({"class": "oh-input w-100"})
-        self.fields["date"].widget = forms.DateInput(
-            attrs={"type": "date", "class": "oh-input w-100"}
-        )
         self.fields["is_fixed"].widget.attrs.update({"class": "oh-switch__checkbox"})
 
 
 class PayslipAllowanceForm(BonusForm):
+    date = forms.DateField(required=False)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["date"].widget = forms.HiddenInput()
@@ -1709,9 +1694,9 @@ class LoanAccountForm(ModelForm):
         model = LoanAccount
         fields = "__all__"
         exclude = ["is_active", "settled_date"]
-        widgets = {
-            "provided_date": forms.DateTimeInput(attrs={"type": "date"}),
-            "installment_start_date": forms.DateTimeInput(attrs={"type": "date"}),
+        field_classes = {
+            "provided_date": BikramSambatDateField,
+            "installment_start_date": BikramSambatDateField,
         }
 
     def as_p(self):
@@ -1725,16 +1710,14 @@ class LoanAccountForm(ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if not self.instance.pk:
-            self.initial["provided_date"] = str(datetime.date.today())
-            self.initial["installment_start_date"] = str(datetime.date.today())
+            self.initial["provided_date"] = datetime.date.today()
+            self.initial["installment_start_date"] = datetime.date.today()
         if self.instance.pk:
             self.verbose_name = self.instance.title
-            # <input type="date"> needs YYYY-MM-DD; the DateTimeInput widget
-            # doesn't render date objects that way, so pass strings.
             if self.instance.provided_date:
-                self.initial["provided_date"] = str(self.instance.provided_date)
+                self.initial["provided_date"] = self.instance.provided_date
             if self.instance.installment_start_date:
-                self.initial["installment_start_date"] = str(
+                self.initial["installment_start_date"] = (
                     self.instance.installment_start_date
                 )
             # Edit shows the same fields as create; the ones that must not
@@ -1864,6 +1847,7 @@ class ReimbursementForm(ModelForm):
         model = Reimbursement
         fields = "__all__"
         exclude = ["is_active", "status"]
+        field_classes = {"allowance_on": BikramSambatDateField}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1872,7 +1856,7 @@ class ReimbursementForm(ModelForm):
         self.employee = self.get_employee()  # 819
 
         if not self.instance.pk:
-            self.initial["allowance_on"] = str(datetime.date.today())
+            self.initial["allowance_on"] = datetime.date.today()
 
         self.initial["employee_id"] = self.employee.id if self.employee else None
 
@@ -1931,9 +1915,7 @@ class ReimbursementForm(ModelForm):
             "if (window.refreshBonusPointsNote) refreshBonusPointsNote();"
         )
 
-        self.fields["allowance_on"].widget = forms.DateInput(
-            attrs={"type": "date", "class": "oh-input w-100"}
-        )
+        self.fields["allowance_on"].widget.attrs.update({"class": "oh-input w-100"})
 
         self.fields["attachment"] = MultipleFileField(label="Attachments")
         self.fields["attachment"].widget.attrs["accept"] = ".jpg, .jpeg, .png, .pdf"
@@ -2196,8 +2178,8 @@ class PayAdjustmentForm(ModelForm):
             "tax_treatment",
             "reason",
         ]
+        field_classes = {"pay_date": BikramSambatDateField}
         widgets = {
-            "pay_date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "reason": forms.Textarea(attrs={"rows": 2}),
         }
 
@@ -2217,7 +2199,7 @@ class PayAdjustmentForm(ModelForm):
         self.fields["employee_id"].queryset = Employee.objects.filter(is_active=True)
         self.initial["tax_treatment"] = self._tax_initial()
         if not self.instance.pk:
-            self.initial["pay_date"] = str(datetime.date.today())
+            self.initial["pay_date"] = datetime.date.today()
         else:
             self.verbose_name = self.instance.title
             # Choosing Draft on a confirmed entry unlocks it in the same save: the page enables the
@@ -2369,10 +2351,10 @@ class PayAdjustmentBulkForm(forms.Form):
             "Changes The Selected Recovery Entries; Arrears Entries Are Left As They Are. Drafts Only."
         ),
     )
-    pay_date = forms.DateField(
+    pay_date = BikramSambatDateField(
         required=False,
         label=_("Pay Date"),
-        widget=forms.DateInput(attrs={"type": "date", "class": "oh-input w-100"}),
+        widget=BikramSambatDateInput(attrs={"class": "oh-input w-100"}),
         help_text=_("Drafts Only. For A Month That Has No Payslip For The Employee."),
     )
 

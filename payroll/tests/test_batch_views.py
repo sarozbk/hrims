@@ -11,6 +11,7 @@ import logging
 from datetime import date, timedelta
 from unittest.mock import patch
 
+import nepali_datetime
 from django.test import TestCase
 from django.urls import reverse
 
@@ -29,6 +30,11 @@ from payroll.views.batch_views import SESSION_KEY
 
 START = date(2026, 4, 1)
 END = date(2026, 4, 30)
+
+
+def bs_input(value):
+    bs_date = nepali_datetime.date.from_datetime_date(value)
+    return f"{bs_date.year:04d}-{bs_date.month:02d}-{bs_date.day:02d}"
 
 CLEAN = {
     "present": 22,
@@ -340,8 +346,8 @@ class ScopeTests(Fixture):
             reverse("payroll-batch-scope"),
             {
                 "batch_name": "April",
-                "period_start": START.isoformat(),
-                "period_end": END.isoformat(),
+                "period_start": bs_input(START),
+                "period_end": bs_input(END),
                 "scope": "all",
             },
         )
@@ -375,8 +381,8 @@ class ScopeTests(Fixture):
             reverse("payroll-batch-scope"),
             {
                 "batch_name": "Cross month",
-                "period_start": "2026-09-15",
-                "period_end": "2026-09-20",
+                "period_start": bs_input(date(2026, 9, 15)),
+                "period_end": bs_input(date(2026, 9, 20)),
                 "scope": "all",
             },
         )
@@ -387,7 +393,11 @@ class ScopeTests(Fixture):
     def test_the_end_may_be_left_out_altogether(self):
         self.client.post(
             reverse("payroll-batch-scope"),
-            {"batch_name": "No end", "period_start": "2026-03-01", "scope": "all"},
+            {
+                "batch_name": "No end",
+                "period_start": bs_input(date(2026, 3, 1)),
+                "scope": "all",
+            },
         )
         self.assertEqual(self.client.session[SESSION_KEY]["period_end"], "2026-03-31")
 
@@ -412,8 +422,7 @@ class ScopeTests(Fixture):
             reverse("payroll-batch-scope"),
             {
                 "batch_name": "Next year",
-                "period_start": "2099-01-01",
-                "period_end": "2099-01-31",
+                "period_start": bs_input(date.today() + timedelta(days=365)),
                 "scope": "all",
             },
         )

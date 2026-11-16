@@ -18,3 +18,14 @@ Examples:
     INSTALLED_APPS += ["client_portal"]
     MIDDLEWARE += ["client_portal.middleware.ClientTrackingMiddleware"]
 """
+
+from .base import BASE_DIR, STATICFILES_DIRS
+
+# Frontend date inputs use Bikram Sambat while storage and calculations remain
+# Gregorian.
+NEPALI_CALENDAR = True
+TIME_ZONE = "Asia/Kathmandu"
+
+STATICFILES_DIRS += [
+    ("nepali_datepicker", BASE_DIR / "horilla" / "settings" / "nepali_datepicker"),
+]

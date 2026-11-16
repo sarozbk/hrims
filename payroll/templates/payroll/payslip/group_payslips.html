@@ -1,4 +1,4 @@
-{% load i18n %} {% load attendancefilters static horillafilters %}
+{% load i18n %} {% load attendancefilters static horillafilters payroll_calendar %}
 {% include 'filter_tags.html' %}
 <div class="oh-card">
   {% dynamic_regroup payslips by "group_name" as group_payslips %}
@@ -82,13 +82,13 @@
                   </div>
                 </div>
                 {% comment %} <div class="oh-sticky-table__td">
-                  <span class="dateformat_changer">{{payslip.start_date}}</span> &nbsp {% trans "to" %} &nbsp <span class="dateformat_changer">{{payslip.end_date}}</span>
+                  <span>{{ payslip.start_date|payroll_date }}</span> &nbsp {% trans "to" %} &nbsp <span>{{ payslip.end_date|payroll_date }}</span>
                 </div> {% endcomment %}
                 <div class="oh-sticky-table__td dateformat_changer">
-                  {{payslip.start_date}}
+                  {{ payslip.start_date|payroll_date }}
                 </div>
                 <div class="oh-sticky-table__td dateformat_changer">
-                  {{payslip.end_date}}
+                  {{ payslip.end_date|payroll_date }}
                 </div>
                 <div class="oh-sticky-table__td">
                   {{payslip.gross_pay|floatformat:2|currency_symbol_position}}

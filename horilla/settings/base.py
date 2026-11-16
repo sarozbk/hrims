@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     "employee",
     "recruitment",
     "leave",
+    "travel",
     "pms",
     "onboarding",
     "asset",
