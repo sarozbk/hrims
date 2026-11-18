@@ -28,10 +28,10 @@ def _month(year, month):
     )
 
 
-def _calendar_month(today):
+def _calendar_month(today, company=None):
     from payroll.nepali_calendar import nepali_calendar_enabled, nepali_period_bounds
 
-    if nepali_calendar_enabled():
+    if nepali_calendar_enabled(company):
         return nepali_period_bounds(today, "month")
     return _month(today.year, today.month)
 
@@ -41,6 +41,14 @@ def user_company(request):
         getattr(request.user, "employee_get", None), "employee_work_info", None
     )
     return getattr(work_info, "company_id", None)
+
+
+def selected_company(request):
+    """The active company, falling back to the user's assigned company."""
+    active = getattr(request, "selected_company_instance", None)
+    if getattr(active, "calendar_system", None) in {"gregorian", "nepali"}:
+        return active
+    return user_company(request)
 
 
 def parse_start_day(value):
@@ -61,16 +69,16 @@ def _cycle(day, today):
 def range_for(mode, today, company=None, start_day=None):
     """``(from, to)`` for a mode on a day. An unknown mode, or a cycle with no start day, is this month."""
     if mode == PREVIOUS_MONTH:
-        current_start, _current_end = _calendar_month(today)
+        current_start, _current_end = _calendar_month(today, company)
         last = current_start - datetime.timedelta(days=1)
-        return _calendar_month(last)
+        return _calendar_month(last, company)
     if mode == PAY_PERIOD:
         from payroll.models.payroll_batch import PayPeriodSettings
 
         return PayPeriodSettings.for_company(company).period_for(today)
     if mode == CUSTOM and start_day:
         return _cycle(start_day, today)
-    return _calendar_month(today)
+    return _calendar_month(today, company)
 
 
 def chosen_mode(request):
@@ -87,7 +95,7 @@ def default_range(request, today=None):
     """The range to open on: the user's choice, this month until they make one."""
     today = today or datetime.date.today()
     return range_for(
-        chosen_mode(request), today, user_company(request), chosen_start_day(request)
+        chosen_mode(request), today, selected_company(request), chosen_start_day(request)
     )
 
 

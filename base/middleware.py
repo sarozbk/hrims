@@ -24,7 +24,11 @@ from employee.models import (
     EmployeeBankDetails,
     EmployeeWorkInformation,
 )
-from horilla.horilla_middlewares import _thread_locals, set_selected_company
+from horilla.horilla_middlewares import (
+    _thread_locals,
+    set_selected_calendar_system,
+    set_selected_company,
+)
 from horilla.methods import get_horilla_model_class
 from horilla_documents.models import DocumentRequest
 
@@ -414,6 +418,9 @@ class CompanyMiddleware:
         # ✅ Store in context
         set_selected_company(company_id)
         company_obj = self._get_company_obj(request, company_id)
+        set_selected_calendar_system(
+            getattr(company_obj, "calendar_system", None)
+        )
         self._set_company_session(request, company_obj)
 
         return self.get_response(request)

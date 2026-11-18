@@ -295,6 +295,19 @@
               <!-- The period: every view and the export use it. Applied with the other filters. -->
               <div class="oh-input-group">
                 <label class="oh-label">{% trans "Date Range" %}</label>
+                {% if calendar_enabled %}
+                <select name="bs_month" id="ms-bs-month" class="oh-select w-100 mb-2"
+                        hx-get="{% url 'attendance-monthly-summary-table' %}"
+                        hx-target="#summary-table-container"
+                        hx-trigger="change"
+                        hx-sync="#summary-table-container:replace"
+                        hx-include="#summary-filter-form">
+                  <option value="">{% trans "Custom date range" %}</option>
+                  {% for value, label, start, end in bs_month_choices %}
+                    <option value="{{ value }}" data-from="{{ start }}" data-to="{{ end }}"{% if value == selected_bs_month %} selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+                {% endif %}
                 <div style="display:flex;gap:8px;">
                   <input type="date" name="from_date" id="ms-from-date" value="{{ from_date }}"
                          title="{% trans 'From' %}" class="oh-input w-100">
@@ -750,6 +763,22 @@
   });
 }());
 
+// Switching either date field changes the range back to a custom AD range.
+['ms-from-date', 'ms-to-date'].forEach(function (id) {
+  var dateInput = document.getElementById(id);
+  if (dateInput) dateInput.addEventListener('change', function () {
+    var bsMonth = document.getElementById('ms-bs-month');
+    if (bsMonth) bsMonth.value = '';
+  });
+});
+var bsMonthSelect = document.getElementById('ms-bs-month');
+if (bsMonthSelect) bsMonthSelect.addEventListener('change', function () {
+  var option = this.options[this.selectedIndex];
+  if (!option.value) return;
+  document.getElementById('ms-from-date').value = option.dataset.from;
+  document.getElementById('ms-to-date').value = option.dataset.to;
+});
+
 // Filter panel open/close (toggleModernFilterPanel/backdrop/Escape) is
 // handled entirely by generic/modern_filter_panel.html now -- no
 // page-local open/close JS needed here anymore.
@@ -888,6 +917,8 @@ function msSaveRange(button) {
     }
     document.getElementById('ms-from-date').value = range.from_date;
     document.getElementById('ms-to-date').value = range.to_date;
+    var bsMonth = document.getElementById('ms-bs-month');
+    if (bsMonth) bsMonth.value = '';
     var modal = button.closest('.oh-modal');
     if (modal) modal.classList.remove('oh-modal--show');
     $('#ms-apply-filter').click();

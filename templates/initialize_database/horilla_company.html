@@ -40,7 +40,12 @@
         <div class="oh-input-group mb-2">
             <label for="{{ form.organization_structure.id_for_label }}" class="mb-1">{% trans "Organization structure" %}</label>
             {{ form.organization_structure }} {{ form.organization_structure.errors }}
-            <small class="text-muted">{% trans "Choose one structure. You can configure branches after setup." %}</small>
+            <small class="text-muted">{% trans "For a multi-branch organization, you will add the first branch in the next step." %}</small>
+        </div>
+        <div class="oh-input-group mb-2">
+            <label for="{{ form.calendar_system.id_for_label }}" class="mb-1">{% trans "Calendar system" %}</label>
+            {{ form.calendar_system }} {{ form.calendar_system.errors }}
+            <small class="text-muted">{% trans "Nepali Calendar displays Bikram Sambat months, such as 2083-07." %}</small>
         </div>
         <div class="oh-input-group mb-2">
             <label for="id_{{form.address.name}}" class="mb-1">{% trans "Address" %}</label>

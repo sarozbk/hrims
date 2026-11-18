@@ -35,6 +35,7 @@ from horilla.http.response import HorillaRedirect
 
 _request_var = ContextVar("request", default=None)
 current_company_id = ContextVar("current_company_id", default=None)
+current_calendar_system = ContextVar("current_calendar_system", default=None)
 _thread_local_state = ContextVar("thread_local_state", default={})
 
 
@@ -154,12 +155,21 @@ class MissingParameterMiddleware:
         return None
 
 
-def set_selected_company(company_id):
+def set_selected_company(company_id, calendar_system=None):
     current_company_id.set(company_id)
+    current_calendar_system.set(calendar_system)
 
 
 def get_selected_company():
     return current_company_id.get()
+
+
+def set_selected_calendar_system(calendar_system):
+    current_calendar_system.set(calendar_system)
+
+
+def get_selected_calendar_system():
+    return current_calendar_system.get()
 
 
 class BulkDeleteSummaryMiddleware:

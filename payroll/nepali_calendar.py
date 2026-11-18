@@ -13,7 +13,17 @@ from django.utils.translation import gettext_lazy as _
 BS_DATE_PATTERN = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
 
 
-def nepali_calendar_enabled():
+def nepali_calendar_enabled(company=None):
+    if company is not None:
+        return getattr(company, "calendar_system", "nepali") == "nepali"
+    try:
+        from horilla.horilla_middlewares import get_selected_calendar_system
+
+        selected_calendar = get_selected_calendar_system()
+    except (ImportError, AttributeError):
+        selected_calendar = None
+    if selected_calendar in {"gregorian", "nepali"}:
+        return selected_calendar == "nepali"
     return getattr(settings, "NEPALI_CALENDAR", False)
 
 
@@ -248,12 +258,12 @@ def nepali_month_days(year, month):
     raise ValueError(f"No valid month length found for BS {year}-{month:02d}")
 
 
-def format_payroll_date(value, pad_day=False):
+def format_payroll_date(value, pad_day=False, company=None):
     if isinstance(value, datetime.datetime):
         value = value.date()
     if not isinstance(value, datetime.date):
         return ""
-    if nepali_calendar_enabled():
+    if nepali_calendar_enabled(company):
         bs_date = nepali_datetime.date(
             *(int(part) for part in bikram_sambat_to_display(value).split("-"))
         )

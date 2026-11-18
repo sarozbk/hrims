@@ -16,6 +16,7 @@ from itertools import chain
 import pandas as pd
 from django.conf import settings
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -1459,6 +1460,65 @@ def _parse_date(value, fallback):
         return fallback
 
 
+def _summary_company(request):
+    active_company = getattr(request, "selected_company_instance", None)
+    if getattr(active_company, "calendar_system", None) in {"gregorian", "nepali"}:
+        return active_company
+    return user_company(request)
+
+
+def _summary_calendar_enabled(request):
+    from payroll.nepali_calendar import nepali_calendar_enabled
+
+    return nepali_calendar_enabled(_summary_company(request))
+
+
+def _summary_dates(request, default_from, default_to):
+    """Resolve a selected BS year/month to its configured AD date bounds."""
+    bs_month = request.GET.get("bs_month", "")
+    if bs_month and _summary_calendar_enabled(request):
+        try:
+            year, month = (int(part) for part in bs_month.split("-", 1))
+            if not 1 <= month <= 12:
+                raise ValueError
+            from payroll.nepali_calendar import (
+                bikram_sambat_to_gregorian,
+                nepali_month_days,
+            )
+
+            start = bikram_sambat_to_gregorian(f"{year:04d}-{month:02d}-01")
+            end = start + datetime.timedelta(days=nepali_month_days(year, month) - 1)
+            return start, end
+        except (ValueError, TypeError, ValidationError):
+            pass
+    return (
+        _parse_date(request.GET.get("from_date"), default_from),
+        _parse_date(request.GET.get("to_date"), default_to),
+    )
+
+
+def _summary_bs_month_choices(default_date, selected_month=""):
+    import nepali_datetime
+
+    from base.models import NepaliCalendarMonth
+    from payroll.nepali_calendar import (
+        bikram_sambat_to_display,
+        bikram_sambat_to_gregorian,
+    )
+
+    months = NepaliCalendarMonth.objects.order_by("bs_year", "bs_month")
+    choices = []
+    for item in months:
+        value = f"{item.bs_year:04d}-{item.bs_month:02d}"
+        label = f"{nepali_datetime.date(item.bs_year, item.bs_month, 1).strftime('%B')} {item.bs_year} ({value})"
+        start = bikram_sambat_to_gregorian(f"{item.bs_year:04d}-{item.bs_month:02d}-01")
+        end = start + datetime.timedelta(days=item.days_in_month - 1)
+        choices.append((value, label, start.isoformat(), end.isoformat()))
+    if not selected_month:
+        selected_month = bikram_sambat_to_display(default_date)[:7]
+    return choices, selected_month
+
+
 @login_required
 @manager_can_enter("attendance.view_attendance")
 def attendance_monthly_summary(request):
@@ -1468,6 +1528,10 @@ def attendance_monthly_summary(request):
     The table is populated via HTMX on load.
     """
     from_date_default, to_date_default = default_range(request)
+    summary_from, summary_to = _summary_dates(
+        request, from_date_default, to_date_default
+    )
+    from_date, to_date = summary_from, summary_to
 
     # Employee/Department/Job Position/Shift/Work Type render as AJAX-
     # searched Select2 comboboxes now (see monthly_summary.html) rather
@@ -1475,22 +1539,33 @@ def attendance_monthly_summary(request):
     # particular doesn't scale as a full dump. Only the currently-selected
     # instances need a real <option> here (select2's own preload
     # requirement), same pattern as HorillaFilterSet._apply_ajax_fields.
-    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+    from payroll.nepali_calendar import format_payroll_date
 
-    if nepali_calendar_enabled():
+    calendar_enabled = _summary_calendar_enabled(request)
+    if calendar_enabled:
         period_text = (
-            f"{format_payroll_date(from_date)} \u2013 {format_payroll_date(to_date)} BS"
+            f"{format_payroll_date(from_date, company=_summary_company(request))} \u2013 "
+            f"{format_payroll_date(to_date, company=_summary_company(request))} BS"
         )
     else:
         period_text = f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}"
+
+    bs_month_choices, selected_bs_month = (
+        _summary_bs_month_choices(to_date_default, request.GET.get("bs_month", ""))
+        if calendar_enabled
+        else ([], "")
+    )
+    table_query = request.GET.copy()
+    if calendar_enabled and not table_query.get("bs_month"):
+        table_query["bs_month"] = selected_bs_month
 
     context = {
         "range_choices": range_choices(request),
         "range_mode": chosen_range_mode(request),
         "start_day_choices": start_day_choices(),
         "start_day": chosen_start_day(request),
-        "from_date": request.GET.get("from_date", from_date_default.isoformat()),
-        "to_date": request.GET.get("to_date", to_date_default.isoformat()),
+        "from_date": summary_from.isoformat(),
+        "to_date": summary_to.isoformat(),
         # Bound to the request the same way from_date/to_date/is_active
         # already are -- without an explicit value= of their own, these two
         # had nothing telling the browser what to show on a fresh render, so
@@ -1533,7 +1608,10 @@ def attendance_monthly_summary(request):
         "pd": request.GET.urlencode(),
         "view": page_view(request),
         # The table's first request: the page's own filters plus the view it opens on.
-        "table_pd": _with_view(request.GET, page_view(request)),
+        "table_pd": _with_view(table_query, page_view(request)),
+        "calendar_enabled": calendar_enabled,
+        "bs_month_choices": bs_month_choices,
+        "selected_bs_month": selected_bs_month,
     }
     # Same fields msRenderFilterTags() (monthly_summary.html) counts as "an
     # extra filter is on" -- not from_date/to_date, which always carry a
@@ -1735,12 +1813,12 @@ def _render_dashboard(request, employee_qs, from_date, to_date):
             worst = (name, ratio)
 
     chosen = Department.objects.filter(pk__in=request.GET.getlist("department_id"))
-    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+    from payroll.nepali_calendar import format_payroll_date
 
-    if nepali_calendar_enabled():
-        period = format_payroll_date(from_date)
+    if _summary_calendar_enabled(request):
+        period = format_payroll_date(from_date, company=_summary_company(request))
         if from_date != to_date:
-            period += f" \u2013 {format_payroll_date(to_date)}"
+            period += f" \u2013 {format_payroll_date(to_date, company=_summary_company(request))}"
         period += " BS"
     else:
         period = (
@@ -1823,7 +1901,7 @@ def _daily_status_labels():
     }
 
 
-def daily_cell(cell):
+def daily_cell(cell, company=None):
     """One day of the day-wise view, from the same cell the calendar draws for that day."""
     if not cell:
         return {
@@ -1850,7 +1928,7 @@ def daily_cell(cell):
         label = labels.get(status, status)
     from payroll.nepali_calendar import format_payroll_date
 
-    title = f"{format_payroll_date(cell['date'])} \u2014 {label}"
+    title = f"{format_payroll_date(cell['date'], company=company)} \u2014 {label}"
     if cell.get("detail") and status not in ("split",) and not cell.get("future_part"):
         title += f" ({cell['detail']})"
     if cell.get("conflict_reason"):
@@ -1889,7 +1967,18 @@ def build_daily_rows(employees, from_date, to_date):
             if c and c["status"] != "out_of_range"
         }
         rows.append(
-            {"employee": emp, "cells": [daily_cell(by_date.get(d)) for d in dates]}
+            {
+                "employee": emp,
+                "cells": [
+                    daily_cell(
+                        by_date.get(d),
+                        company=getattr(
+                            getattr(emp, "employee_work_info", None), "company_id", None
+                        ),
+                    )
+                    for d in dates
+                ],
+            }
         )
     return rows
 
@@ -1910,16 +1999,19 @@ def _render_daily(request, employee_qs, from_date, to_date):
         ordered = employee_qs.order_by("employee_first_name", "employee_last_name")
         page = paginator_qry(ordered, request.GET.get("page"))
         rows = build_daily_rows(list(page), from_date, to_date)
-    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+    from payroll.nepali_calendar import format_payroll_date
 
-    if nepali_calendar_enabled():
+    if _summary_calendar_enabled(request):
         period_text = (
-            f"{format_payroll_date(from_date)} \u2013 {format_payroll_date(to_date)} BS"
+            f"{format_payroll_date(from_date, company=_summary_company(request))} \u2013 "
+            f"{format_payroll_date(to_date, company=_summary_company(request))} BS"
         )
         displayed_days = [
             {
                 "date": d,
-                "display_day": format_payroll_date(d).split(" ", 1)[0],
+                "display_day": format_payroll_date(
+                    d, company=_summary_company(request)
+                ).split(" ", 1)[0],
                 "weekend": d.weekday() >= 5,
                 "today": d == today,
             }
@@ -1956,8 +2048,7 @@ def attendance_monthly_summary_table(request):
     Triggered by the Filter button and on initial page load.
     """
     default_from, default_to = default_range(request)
-    from_date = _parse_date(request.GET.get("from_date"), default_from)
-    to_date = _parse_date(request.GET.get("to_date"), default_to)
+    from_date, to_date = _summary_dates(request, default_from, default_to)
 
     if from_date > to_date:
         from_date, to_date = to_date, from_date
@@ -2070,9 +2161,10 @@ def attendance_monthly_summary_table(request):
 
     from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
 
-    if nepali_calendar_enabled():
+    if _summary_calendar_enabled(request):
         period_text = (
-            f"{format_payroll_date(from_date)} \u2013 {format_payroll_date(to_date)} BS"
+            f"{format_payroll_date(from_date, company=_summary_company(request))} \u2013 "
+            f"{format_payroll_date(to_date, company=_summary_company(request))} BS"
         )
     else:
         period_text = f"{from_date:%d %b %Y} \u2013 {to_date:%d %b %Y}"
@@ -2109,8 +2201,7 @@ def attendance_monthly_summary_export(request):
     Accepts the same GET params as the table view (no pagination).
     """
     default_from, default_to = default_range(request)
-    from_date = _parse_date(request.GET.get("from_date"), default_from)
-    to_date = _parse_date(request.GET.get("to_date"), default_to)
+    from_date, to_date = _summary_dates(request, default_from, default_to)
 
     if from_date > to_date:
         from_date, to_date = to_date, from_date
@@ -2190,11 +2281,12 @@ def attendance_monthly_summary_export(request):
     company = getattr(request, "selected_company_instance", None)
     company_title = getattr(company, "company", "") if company else ""
     company_logo = getattr(company, "icon", "") if company else ""
-    from payroll.nepali_calendar import format_payroll_date, nepali_calendar_enabled
+    from payroll.nepali_calendar import format_payroll_date
 
-    if nepali_calendar_enabled():
+    if _summary_calendar_enabled(request):
         date_range_str = (
-            f"{format_payroll_date(from_date)}  TO  {format_payroll_date(to_date)} BS"
+            f"{format_payroll_date(from_date, company=_summary_company(request))}  TO  "
+            f"{format_payroll_date(to_date, company=_summary_company(request))} BS"
         )
     else:
         date_range_str = f"{from_date}  TO  {to_date}"
@@ -2860,6 +2952,11 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
     from attendance.methods.utils import strtime_seconds
     from attendance.models import AttendanceConflictResolution, GraceTime
     from leave.models import LeaveRequest
+    from payroll.nepali_calendar import nepali_calendar_enabled
+
+    work_info = getattr(emp, "employee_work_info", None)
+    company = getattr(work_info, "company_id", None)
+    calendar_enabled = nepali_calendar_enabled(company)
 
     # -- Grace time -----------------------------------------------------------
     grace_secs = 0
@@ -2890,12 +2987,9 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
     unpaid_map = {}
     leave_to = to_date
     if show_future_leave:
-        from payroll.nepali_calendar import (
-            bikram_sambat_to_gregorian,
-            nepali_calendar_enabled,
-        )
+        from payroll.nepali_calendar import bikram_sambat_to_gregorian
 
-        if nepali_calendar_enabled():
+        if calendar_enabled:
             import nepali_datetime
 
             bs_month = nepali_datetime.date.from_datetime_date(to_date)
@@ -3254,13 +3348,12 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
     from payroll.nepali_calendar import (
         bikram_sambat_to_gregorian,
         format_payroll_date,
-        nepali_calendar_enabled,
     )
 
     months = []
     today = datetime.date.today()
     month_specs = []
-    if nepali_calendar_enabled():
+    if calendar_enabled:
         import nepali_datetime
 
         first_bs = nepali_datetime.date.from_datetime_date(from_date)
@@ -3284,7 +3377,7 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
             grid = [None] * month_start.weekday() + days
             grid += [None] * ((-len(grid)) % 7)
             weeks = [grid[offset : offset + 7] for offset in range(0, len(grid), 7)]
-            label = format_payroll_date(month_start).split(" ", 1)[1] + " BS"
+            label = format_payroll_date(month_start, company=company).split(" ", 1)[1] + " BS"
             month_specs.append((label, weeks))
             year, month = next_year, next_month
     else:
@@ -3311,10 +3404,10 @@ def _build_calendar_context(emp, from_date, to_date, show_future_leave=False):
                 else:
                     n = (
                         nepali_datetime.date.from_datetime_date(d).day
-                        if nepali_calendar_enabled()
+                        if calendar_enabled
                         else d.day
                     )
-                    display_day = format_payroll_date(d).split(" ", 1)[0]
+                    display_day = format_payroll_date(d, company=company).split(" ", 1)[0]
                     future_leave = (
                         show_future_leave
                         and d > to_date

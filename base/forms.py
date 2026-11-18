@@ -723,6 +723,7 @@ class CompanyForm(ModelForm):
 
     cols = {
         "company": 12,
+        "calendar_system": 12,
         "address": 12,
         "country": 12,
         "state": 12,

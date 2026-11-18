@@ -99,6 +99,10 @@ class Company(HorillaModel):
         ("branches", _("One company with multiple branches")),
         ("group", _("Group with multiple companies")),
     ]
+    CALENDAR_SYSTEM_CHOICES = [
+        ("gregorian", _("Gregorian Calendar")),
+        ("nepali", _("Nepali Calendar (Bikram Sambat)")),
+    ]
 
     company = models.CharField(max_length=50, verbose_name=_("Name"))
     organization_structure = models.CharField(
@@ -107,6 +111,13 @@ class Company(HorillaModel):
         default="single",
         verbose_name=_("Organization structure"),
         help_text=_("Choose how this organization is structured."),
+    )
+    calendar_system = models.CharField(
+        max_length=12,
+        choices=CALENDAR_SYSTEM_CHOICES,
+        default="nepali",
+        verbose_name=_("Calendar system"),
+        help_text=_("Choose which calendar to use for date selection and display."),
     )
     hq = models.BooleanField(default=False)
     # Nullable so a company can be created from just a name (master data import).

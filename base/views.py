@@ -269,22 +269,76 @@ def initialize_database_condition():
     """
     Determines if the database initialization process should be triggered.
 
-    This function checks whether there are any users in the database. If there are no users,
-    or if there are superusers without associated employees, it indicates that the database
-    needs to be initialized.
+    The database is considered initialized once a superuser has an employee.
+    Keep this check focused on whether it is safe to create the first user;
+    company and branch completion are tracked separately for wizard recovery.
 
     Returns:
         bool: True if the database needs to be initialized, False otherwise.
     """
-    init_database = not HorillaUser.objects.exists()
-    if not init_database:
-        init_database = True
-        superusers = HorillaUser.objects.filter(is_superuser=True)
-        for user in superusers:
-            if hasattr(user, "employee_get"):
-                init_database = False
-                break
-    return init_database
+    return not any(
+        hasattr(user, "employee_get")
+        for user in HorillaUser.objects.filter(is_superuser=True).iterator()
+    )
+
+
+def _initial_setup_incomplete():
+    """Whether the first admin still needs company or branch setup."""
+    if initialize_database_condition():
+        return True
+    company = Company._base_manager.order_by("pk").first()
+    if company is None:
+        return True
+    if company.organization_structure == "branches":
+        return not Branch._base_manager.filter(
+            company_id=company, is_active=True
+        ).exists()
+    return False
+
+
+def _initialize_database_resume(request):
+    """Render the first unfinished company/branch step for a setup admin."""
+    company = Company._base_manager.order_by("pk").first()
+    if company is None:
+        return render(
+            request,
+            "initialize_database/horilla_company.html",
+            {
+                "form": CompanyForm(
+                    initial={"hq": True, "organization_structure": "branches"}
+                )
+            },
+        )
+
+    if company.organization_structure == "branches":
+        branch = Branch._base_manager.filter(
+            company_id=company, is_active=True
+        ).order_by("pk").first()
+        if branch is None:
+            request.session["setup_company_id"] = company.pk
+            return render(
+                request,
+                "initialize_database/horilla_branch.html",
+                {"form": BranchForm(company=company), "company": company},
+            )
+
+    try:
+        work_info = request.user.employee_get.employee_work_info
+        work_info.company_id = company
+        if company.organization_structure == "branches":
+            work_info.branch_id = branch
+            work_info.save(update_fields=["company_id", "branch_id"])
+        else:
+            work_info.save(update_fields=["company_id"])
+    except Exception:
+        logger.exception("initialize database: could not resume creator company assignment")
+
+    request.session.pop("setup_company_id", None)
+    return render(
+        request,
+        "initialize_database/horilla_department.html",
+        {"form": DepartmentForm(initial={"company_id": company})},
+    )
 
 
 def _shift_fixture_dates(file_path):
@@ -574,10 +628,20 @@ def initialize_database(request):
     Returns:
         HttpResponse: The rendered HTML template or a redirect response.
     """
-    if initialize_database_condition():
+    if _initial_setup_incomplete():
         if request.method == "POST":
             password = request.POST.get("password")
             if settings.DB_INIT_PASSWORD == password:
+                if request.user.is_authenticated and request.user.is_superuser:
+                    if getattr(request.user, "employee_get", None) is not None:
+                        request.session.pop("db_init_verified", None)
+                        return _initialize_database_resume(request)
+                if not initialize_database_condition():
+                    messages.warning(
+                        request,
+                        _("Log in as the setup administrator to continue initialization."),
+                    )
+                    return redirect("login")
                 request.session["db_init_verified"] = True
                 return redirect(initialize_database_user)
             else:
@@ -676,6 +740,7 @@ def initialize_database_company(request):
                 logger.exception(
                     "initialize database: could not attach creator to company"
                 )
+            request.session.pop("setup_company_id", None)
             return render(
                 request,
                 "initialize_database/horilla_department.html",
@@ -694,7 +759,7 @@ def initialize_database_branch(request):
     ).first()
     if company is None:
         return redirect(initialize_database_department)
-    if company.branches.exists():
+    if Branch._base_manager.filter(company_id=company, is_active=True).exists():
         return redirect(initialize_database_department)
 
     form = BranchForm(request.POST or None, company=company)
@@ -992,6 +1057,9 @@ def login_user(request):
 
         messages.success(request, _("Login successful."))
 
+        if _initial_setup_incomplete() and user.is_superuser and employee:
+            return redirect("initialize-database")
+
         # Ensure `next_url` is a safe local URL
         if not url_has_allowed_host_and_scheme(
             next_url, allowed_hosts={request.get_host()}
@@ -1007,7 +1075,7 @@ def login_user(request):
         request,
         "login.html",
         {
-            "initialize_database": initialize_database_condition(),
+            "initialize_database": _initial_setup_incomplete(),
             "form_username": form_state.get("username", ""),
             "field_errors": form_state.get("field_errors", {}),
         },
