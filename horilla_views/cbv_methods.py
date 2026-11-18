@@ -53,6 +53,7 @@ from horilla.horilla_middlewares import _thread_locals
 from horilla.methods import handle_no_permission
 from horilla.week import first_day_of_week, week_start  # noqa: F401 (re-exported)
 from horilla_views.templatetags.generic_template_filters import getattribute
+from payroll.nepali_calendar import BikramSambatDateField, BikramSambatDateInput
 
 FIELD_WIDGET_MAP = {
     models.CharField: forms.TextInput(attrs={"class": "oh-input w-100"}),
@@ -73,9 +74,7 @@ FIELD_WIDGET_MAP = {
     models.FloatField: forms.NumberInput(attrs={"class": "oh-input w-100"}),
     models.DecimalField: forms.NumberInput(attrs={"class": "oh-input w-100"}),
     models.EmailField: forms.EmailInput(attrs={"class": "oh-input w-100"}),
-    models.DateField: forms.DateInput(
-        attrs={"type": "date", "class": "oh-input w-100"}
-    ),
+    models.DateField: BikramSambatDateInput(attrs={"class": "oh-input w-100"}),
     models.DateTimeField: forms.DateTimeInput(
         attrs={"type": "date", "class": "oh-input w-100"}
     ),
@@ -99,7 +98,7 @@ MODEL_FORM_FIELD_MAP = {
     models.ImageField: forms.FileField,
     models.FileField: forms.FileField,
     models.EmailField: forms.EmailField,
-    models.DateField: forms.DateField,
+    models.DateField: BikramSambatDateField,
     models.DateTimeField: forms.DateTimeField,
     models.TimeField: forms.TimeField,
     models.BooleanField: forms.BooleanField,

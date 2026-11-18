@@ -224,6 +224,8 @@ class DateTable(models.Model):
     ye = models.DateField(verbose_name=_("BS year end"))
     fys = models.DateField(verbose_name=_("Fiscal year start"))
     fye = models.DateField(verbose_name=_("Fiscal year end"))
+    ws = models.DateField(verbose_name=_("Week start"))
+    we = models.DateField(verbose_name=_("Week end"))
     hs = models.DateField(verbose_name=_("Half-year start"))
     he = models.DateField(verbose_name=_("Half-year end"))
     qs = models.DateField(verbose_name=_("Quarter start"))
@@ -244,6 +246,12 @@ class NepaliCalendarMonth(models.Model):
     bs_year = models.PositiveSmallIntegerField(verbose_name=_("BS year"))
     bs_month = models.PositiveSmallIntegerField(verbose_name=_("BS month"))
     days_in_month = models.PositiveSmallIntegerField(verbose_name=_("Days in month"))
+    bs_year_start_ad = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("AD date of BS new year"),
+        help_text=_("Set on month 1 to keep published BS new-year dates anchored."),
+    )
 
     class Meta:
         db_table = "nepali_calendar_months"

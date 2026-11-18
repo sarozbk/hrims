@@ -37,6 +37,26 @@ def bikram_sambat_to_gregorian(value):
             ).first()
             if ad_date is not None:
                 return ad_date
+            # Resolve configured dates directly too, including dates outside
+            # the date dimension's complete fiscal-year coverage.
+            from base.models import NepaliCalendarMonth
+
+            year, month, day = (int(part) for part in match.groups())
+            configured_months = list(
+                NepaliCalendarMonth.objects.filter(bs_year=year)
+                .order_by("bs_month")
+                .values_list("bs_month", "days_in_month", "bs_year_start_ad")
+            )
+            if len(configured_months) == 12:
+                month_lengths = {number: length for number, length, _anchor in configured_months}
+                configured_days = month_lengths.get(month)
+                if configured_days is None or day > configured_days:
+                    raise ValidationError(_("This day does not exist in the configured BS month."))
+                anchor = configured_months[0][2]
+                if anchor is not None:
+                    return anchor + datetime.timedelta(
+                        days=sum(month_lengths[number] for number in range(1, month)) + day - 1
+                    )
         except (AppRegistryNotReady, DatabaseError):
             pass
         bs_date = nepali_datetime.date(*(int(part) for part in match.groups()))
@@ -84,6 +104,28 @@ def bikram_sambat_to_display(value):
     except (AppRegistryNotReady, DatabaseError):
         # Migrations and pre-dimension installations still use the conversion
         # package until the date table is available.
+        pass
+    try:
+        from base.models import NepaliCalendarMonth
+
+        package_year = nepali_datetime.date.from_datetime_date(value).year
+        rows = list(
+            NepaliCalendarMonth.objects.filter(bs_year__range=(package_year - 1, package_year + 1))
+            .order_by("bs_year", "bs_month")
+            .values_list("bs_year", "bs_month", "days_in_month", "bs_year_start_ad")
+        )
+        for year in sorted({row[0] for row in rows}):
+            year_rows = [row for row in rows if row[0] == year]
+            if len(year_rows) != 12 or year_rows[0][3] is None:
+                continue
+            cursor = year_rows[0][3]
+            for _year, month, days, _anchor in year_rows:
+                month_end = cursor + datetime.timedelta(days=days)
+                if cursor <= value < month_end:
+                    day = (value - cursor).days + 1
+                    return f"{year:04d}-{month:02d}-{day:02d}"
+                cursor = month_end
+    except (AppRegistryNotReady, DatabaseError):
         pass
     bs_date = nepali_datetime.date.from_datetime_date(value)
     return f"{bs_date.year:04d}-{bs_date.month:02d}-{bs_date.day:02d}"
@@ -155,6 +197,26 @@ def nepali_period_bounds(value, period="month"):
         start_bs = nepali_datetime.date(bs_date.year, 1, 1)
         end_bs = nepali_datetime.date(bs_date.year + 1, 1, 1) - datetime.timedelta(days=1)
     return start_bs.to_datetime_date(), end_bs.to_datetime_date()
+
+
+def nepali_week_bounds(value):
+    """Return the configured calendar week's AD start and end dates."""
+    if isinstance(value, datetime.datetime):
+        value = value.date()
+    if not isinstance(value, datetime.date):
+        raise TypeError("value must be a date or datetime")
+    try:
+        from base.models import DateTable
+
+        bounds = DateTable.objects.filter(ad_date=value).values_list("ws", "we").first()
+    except (AppRegistryNotReady, DatabaseError):
+        bounds = None
+    if bounds:
+        return bounds
+    from horilla.week import week_start
+
+    start = week_start(value)
+    return start, start + datetime.timedelta(days=6)
 
 
 def format_fiscal_year(value):

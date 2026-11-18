@@ -25,6 +25,8 @@ class Migration(migrations.Migration):
                 ("ye", models.DateField(verbose_name="BS year end")),
                 ("fys", models.DateField(verbose_name="Fiscal year start")),
                 ("fye", models.DateField(verbose_name="Fiscal year end")),
+                ("ws", models.DateField(verbose_name="Week start")),
+                ("we", models.DateField(verbose_name="Week end")),
                 ("hs", models.DateField(verbose_name="Half-year start")),
                 ("he", models.DateField(verbose_name="Half-year end")),
                 ("qs", models.DateField(verbose_name="Quarter start")),
@@ -46,6 +48,7 @@ class Migration(migrations.Migration):
                 ("bs_year", models.PositiveSmallIntegerField(verbose_name="BS year")),
                 ("bs_month", models.PositiveSmallIntegerField(verbose_name="BS month")),
                 ("days_in_month", models.PositiveSmallIntegerField(verbose_name="Days in month")),
+                ("bs_year_start_ad", models.DateField(blank=True, help_text="Set on month 1 to keep published BS new-year dates anchored.", null=True, verbose_name="AD date of BS new year")),
             ],
             options={
                 "db_table": "nepali_calendar_months",

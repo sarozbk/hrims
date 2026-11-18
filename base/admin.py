@@ -54,7 +54,7 @@ admin.site.register(Branch)
 
 @admin.register(DateTable)
 class DateTableAdmin(admin.ModelAdmin):
-    list_display = ("ad_date", "bs_date", "ms", "me", "fys", "fye")
+    list_display = ("ad_date", "bs_date", "ws", "we", "ms", "me", "fys", "fye")
     search_fields = ("bs_date",)
     ordering = ("ad_date",)
     readonly_fields = tuple(field.name for field in DateTable._meta.fields)
@@ -74,19 +74,30 @@ class NepaliCalendarMonthAdmin(admin.ModelAdmin):
     list_display = ("bs_year", "bs_month", "days_in_month")
     list_filter = ("bs_year",)
     ordering = ("bs_year", "bs_month")
-    fields = ("bs_year", "bs_month", "days_in_month")
-    readonly_fields = ("bs_year", "bs_month")
+    fields = ("bs_year", "bs_month", "days_in_month", "bs_year_start_ad")
     actions = ("rebuild_date_table",)
 
     @admin.action(description="Rebuild AD ↔ BS date table from calendar settings")
     def rebuild_date_table(self, request, queryset):
+        from django.contrib import messages
+
         from base.nepali_calendar_data import rebuild_nepali_date_table
 
-        count = rebuild_nepali_date_table()
+        try:
+            count = rebuild_nepali_date_table()
+        except ValueError as error:
+            self.message_user(request, str(error), level=messages.ERROR)
+            return
         self.message_user(request, f"Rebuilt {count:,} date rows from calendar settings.")
 
     def has_add_permission(self, request):
         return False
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly = ["bs_year", "bs_month"]
+        if obj is None or obj.bs_month != 1:
+            readonly.append("bs_year_start_ad")
+        return tuple(readonly)
 
     def has_delete_permission(self, request, obj=None):
         return False
