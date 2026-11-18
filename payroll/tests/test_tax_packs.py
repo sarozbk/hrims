@@ -83,6 +83,24 @@ class TaxPackDataTests(TestCase):
             preview_yearly_tax(status, 2000000)["tax"], 192400.0, places=2
         )
 
+    def test_nepal_fy_2083_84_matches_ird_published_bracket_totals(self):
+        load_tax_packs(["np_2083_84"])
+        status = FilingStatus.objects.get(
+            filing_status="Nepal — Resident Individual (FY 2083/84)"
+        )
+
+        for income, expected_tax in (
+            (1000000, 10000),
+            (1500000, 60000),
+            (2500000, 260000),
+            (4000000, 665000),
+            (6000000, 1245000),
+        ):
+            with self.subTest(income=income):
+                self.assertAlmostEqual(
+                    preview_yearly_tax(status, income)["tax"], expected_tax, places=2
+                )
+
     def test_the_preview_carries_the_rebate_rule_so_the_page_can_explain_it(self):
         load_tax_packs(["in_new"])
         status = FilingStatus.objects.get(filing_status__startswith="India — New")

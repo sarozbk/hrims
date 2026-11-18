@@ -3,9 +3,7 @@ This page handles the cbv methods for Biometric app
 """
 
 from typing import Any
-from venv import logger
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from django.conf import settings
 from django.contrib import messages
 from django.http import HttpResponse
@@ -13,17 +11,10 @@ from django.urls import reverse
 from django.utils.decorators import method_decorator
 from django.utils.text import format_lazy
 from django.utils.translation import gettext_lazy as _
-from zk import ZK
 
 from biometric.filters import BiometricDeviceFilter
 from biometric.forms import BiometricDeviceForm, BiometricDeviceSchedulerForm
 from biometric.models import BiometricDevices
-from biometric.views import (
-    anviz_biometric_attendance_scheduler,
-    cosec_biometric_attendance_scheduler,
-    str_time_seconds,
-    zk_biometric_attendance_scheduler,
-)
 from horilla.http.response import HorillaRedirect
 from horilla_views.cbv_methods import login_required, permission_required
 from horilla_views.generic.cbv.views import (
@@ -259,95 +250,14 @@ class BiometricSheduleForm(HorillaFormView):
         return context
 
     def form_valid(self, form: BiometricDeviceSchedulerForm) -> HttpResponse:
-        if form.is_valid():
-            if form.instance.pk:
-                message = _("Biometric device updated successfully.")
-                device = BiometricDevices.objects.get(id=self.form.instance.pk)
+        device = form.save(commit=False)
+        device.is_scheduler = True
+        device.is_live = False
+        device.save()
 
-                if device.machine_type == "zk":
-                    try:
-                        port_no = device.port
-                        machine_ip = device.machine_ip
-                        conn = None
-                        zk_device = ZK(
-                            machine_ip,
-                            port=port_no,
-                            timeout=5,
-                            password=0,
-                            force_udp=False,
-                            ommit_ping=False,
-                        )
-                        conn = zk_device.connect()
-                        conn.test_voice(index=0)
-                        duration = self.request.POST.get("scheduler_duration")
-                        device = BiometricDevices.objects.get(id=self.form.instance.pk)
-                        device.scheduler_duration = duration
-                        device.is_scheduler = True
-                        device.is_live = False
-                        device.save()
-                        scheduler = BackgroundScheduler()
-                        scheduler.add_job(
-                            lambda: zk_biometric_attendance_scheduler(device.id),
-                            "interval",
-                            seconds=str_time_seconds(device.scheduler_duration),
-                        )
-                        scheduler.start()
-                        return HorillaRedirect(self.request)
-                    except Exception as error:
-                        logger.error(
-                            "An error comes in biometric_device_schedule ", error
-                        )
-                        script = """
-                        <script>
-                            Swal.fire({
-                            title : "Schedule Attendance unsuccessful",
-                            text: "Please double-check the accuracy of the provided IP Address and Port Number for correctness",
-                            icon: "warning",
-                            showConfirmButton: false,
-                            timer: 3500,
-                            timerProgressBar: true,
-                            didClose: () => {
-                                location.reload();
-                                },
-                            });
-                        </script>
-                        """
-                        return HttpResponse(script)
-                elif device.machine_type == "anviz":
-                    duration = self.request.POST.get("scheduler_duration")
-                    device.is_scheduler = True
-                    device.scheduler_duration = duration
-                    device.save()
-                    scheduler = BackgroundScheduler()
-                    scheduler.add_job(
-                        lambda: anviz_biometric_attendance_scheduler(device.id),
-                        "interval",
-                        seconds=str_time_seconds(device.scheduler_duration),
-                    )
-                    scheduler.start()
-                    return HorillaRedirect(self.request)
-                else:
-                    duration = self.request.POST.get("scheduler_duration")
-                    device.is_scheduler = True
-                    device.is_live = False
-                    device.scheduler_duration = duration
-                    device.save()
-                    scheduler = BackgroundScheduler()
-                    existing_thread = settings.BIO_DEVICE_THREADS.get(device.id)
-                    if existing_thread:
-                        existing_thread.stop()
-                        del settings.BIO_DEVICE_THREADS[device.id]
-                    scheduler.add_job(
-                        lambda: cosec_biometric_attendance_scheduler(device.id),
-                        "interval",
-                        seconds=str_time_seconds(device.scheduler_duration),
-                    )
-                    scheduler.start()
-                    return HorillaRedirect(self.request)
-            # else:
-            #     message = _("Biometric device added successfully.")
-            form.save()
+        if device.machine_type == "cosec":
+            existing_thread = settings.BIO_DEVICE_THREADS.pop(device.id, None)
+            if existing_thread:
+                existing_thread.stop()
 
-            messages.success(self.request, message)
-            # return self.HttpResponse("<script>location.reload();</script>")
-        return super().form_valid(form)
+        return HorillaRedirect(self.request)

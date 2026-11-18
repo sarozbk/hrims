@@ -36,6 +36,26 @@ from django.utils.translation import gettext_lazy as _
 # (from, to, rate). ``None`` as the upper bound means "and above".
 TAX_PACKS = [
     {
+        "key": "np_2083_84",
+        "country": _("Nepal"),
+        "name": "Nepal — Resident Individual (FY 2083/84)",
+        "based_on": "taxable_gross_pay",
+        "description": _(
+            "Resident natural-person bands (NPR): 1% to 1,000,000; 10% to "
+            "1,500,000; 20% to 2,500,000; 27% to 4,000,000; 29% above "
+            "(includes 2 extra points). The IRD lists the same bands for "
+            "single/couple. Conditional deductions and reliefs are excluded; "
+            "verify eligibility separately."
+        ),
+        "slabs": [
+            (0, 1000000, 1),
+            (1000000, 1500000, 10),
+            (1500000, 2500000, 20),
+            (2500000, 4000000, 27),
+            (4000000, None, 29),
+        ],
+    },
+    {
         "key": "in_new",
         "country": _("India"),
         "name": "India — New Regime (FY 2025-26)",
@@ -190,13 +210,14 @@ def pack_rows(loaded_names=frozenset()):
     return rows
 
 
-def load_tax_packs(keys=None):
+def load_tax_packs(keys=None, branch=None):
     """
     Create a FilingStatus (with slabs and adjustments) for each requested pack.
 
-    Keyed on name via get_or_create, so re-running never duplicates and never
-    overwrites an admin's edits to a pack they have already tuned. Returns the
-    names actually created.
+    Keyed on name and branch via get_or_create, so re-running never duplicates
+    and never overwrites an admin's edits to a pack they have already tuned.
+    Leave ``branch`` empty to create company-wide packs shared across branches.
+    Returns the names actually created.
     """
     from payroll.models.models import FilingStatus
     from payroll.models.tax_models import TaxBracket
@@ -208,8 +229,15 @@ def load_tax_packs(keys=None):
         if wanted is not None and pack["key"] not in wanted:
             continue
 
+        identity = {
+            "filing_status": pack["name"],
+            "branch_id": branch,
+        }
+        if branch is not None:
+            identity["company_id"] = branch.company_id
+
         filing_status, was_created = FilingStatus.objects.get_or_create(
-            filing_status=pack["name"],
+            **identity,
             defaults={
                 "based_on": pack["based_on"],
                 "description": pack["description"],

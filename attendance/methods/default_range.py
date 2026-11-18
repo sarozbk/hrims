@@ -28,6 +28,14 @@ def _month(year, month):
     )
 
 
+def _calendar_month(today):
+    from payroll.nepali_calendar import nepali_calendar_enabled, nepali_period_bounds
+
+    if nepali_calendar_enabled():
+        return nepali_period_bounds(today, "month")
+    return _month(today.year, today.month)
+
+
 def user_company(request):
     work_info = getattr(
         getattr(request.user, "employee_get", None), "employee_work_info", None
@@ -53,15 +61,16 @@ def _cycle(day, today):
 def range_for(mode, today, company=None, start_day=None):
     """``(from, to)`` for a mode on a day. An unknown mode, or a cycle with no start day, is this month."""
     if mode == PREVIOUS_MONTH:
-        last = today.replace(day=1) - datetime.timedelta(days=1)
-        return _month(last.year, last.month)
+        current_start, _current_end = _calendar_month(today)
+        last = current_start - datetime.timedelta(days=1)
+        return _calendar_month(last)
     if mode == PAY_PERIOD:
         from payroll.models.payroll_batch import PayPeriodSettings
 
         return PayPeriodSettings.for_company(company).period_for(today)
     if mode == CUSTOM and start_day:
         return _cycle(start_day, today)
-    return _month(today.year, today.month)
+    return _calendar_month(today)
 
 
 def chosen_mode(request):

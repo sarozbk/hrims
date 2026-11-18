@@ -44,7 +44,7 @@ class FilingStatusForm(ModelForm):
         # form template owns the <form> and its Save buttons, so anything
         # appended after it rendered outside the form and spilled below the
         # dialog.
-        fields = ["filing_status", "based_on", "use_py", "description"]
+        fields = ["filing_status", "based_on", "use_py", "description", "branch_id"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

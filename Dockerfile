@@ -14,7 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Docker CI's Trivy gate (--ignore-unfixed, CRITICAL) caught: a fixed
 # perl-base existed in Debian's repos and was not in the image.
 RUN apt-get update \
-    && apt-get upgrade -y \
+    # && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
@@ -67,7 +67,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # `upgrade` first -- see the builder stage's comment. This is the stage
 # Trivy actually scans, so it is the one the CI gate needs.
 RUN apt-get update \
-    && apt-get upgrade -y \
+    # && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         libpq5 \
         libjpeg62-turbo \

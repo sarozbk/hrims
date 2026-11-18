@@ -26,3 +26,22 @@
         </div>
     </div>
 </div>
+{% if show_branch_switcher %}
+<div id="multBranch" class="oh-dropdown" x-data="{open: false}" @click="open = !open" title="{% trans 'Branches' %}">
+    <div class="oh-navbar__action-icons">
+        <a href="#" class="oh-navbar__action-icons-link"><ion-icon name="git-branch-outline"></ion-icon></a>
+        <div class="oh-dropdown__menu oh-dropdown__menu--right" x-show="open" @click.outside="open = false" style="display:none; margin-top:115%;">
+            <ul class="oh-dropdown__items">
+                {% for branch in all_branches %}
+                <li class="oh-dropdown__item">
+                    <a hx-get="{% url 'update-selected-branch' %}?branch_id={{ branch.0 }}&next={{ request.path }}" class="oh-dropdown__link">
+                        {{ branch.1 }}
+                        {% if branch.2 %}<ion-icon name="checkmark-circle-outline" style="position: relative; top: 3.3px; color: green; font-size: 1.2em;"></ion-icon>{% endif %}
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endif %}

@@ -78,6 +78,7 @@ from base.forms import (
     AuditTagForm,
     ChangePasswordForm,
     ChangeUsernameForm,
+    BranchForm,
     CompanyForm,
     CompanyLeaveForm,
     DepartmentForm,
@@ -144,6 +145,7 @@ from base.models import (
     AnnouncementExpire,
     BaserequestFile,
     BiometricAttendance,
+    Branch,
     Company,
     CompanyGroupAssignment,
     CompanyLanguageSetting,
@@ -633,7 +635,11 @@ def initialize_database_user(request):
         return render(
             request,
             "initialize_database/horilla_company.html",
-            {"form": CompanyForm(initial={"hq": True})},
+            {
+                "form": CompanyForm(
+                    initial={"hq": True, "organization_structure": "branches"}
+                )
+            },
         )
     return render(request, "initialize_database/horilla_user_signup.html")
 
@@ -650,11 +656,18 @@ def initialize_database_company(request):
     Returns:
         HttpResponse: The rendered HTML template for department creation or company creation.
     """
-    form = CompanyForm()
+    form = CompanyForm(initial={"hq": True, "organization_structure": "branches"})
     if request.method == "POST":
         form = CompanyForm(request.POST, request.FILES)
         if form.is_valid():
             company = form.save()
+            request.session["setup_company_id"] = company.pk
+            if company.organization_structure == "branches":
+                return render(
+                    request,
+                    "initialize_database/horilla_branch.html",
+                    {"form": BranchForm(company=company), "company": company},
+                )
             try:
                 employee = request.user.employee_get
                 employee.employee_work_info.company_id = company
@@ -669,6 +682,42 @@ def initialize_database_company(request):
                 {"form": DepartmentForm(initial={"company_id": company})},
             )
     return render(request, "initialize_database/horilla_company.html", {"form": form})
+
+
+@superuser_required
+@hx_request_required
+def initialize_database_branch(request):
+    """Create the first branch selected by the organization setup wizard."""
+    company = Company.objects.filter(
+        pk=request.session.get("setup_company_id"),
+        organization_structure="branches",
+    ).first()
+    if company is None:
+        return redirect(initialize_database_department)
+    if company.branches.exists():
+        return redirect(initialize_database_department)
+
+    form = BranchForm(request.POST or None, company=company)
+    if request.method == "POST" and form.is_valid():
+        branch = form.save()
+        try:
+            work_info = request.user.employee_get.employee_work_info
+            work_info.company_id = company
+            work_info.branch_id = branch
+            work_info.save(update_fields=["company_id", "branch_id"])
+        except Exception:
+            logger.exception("initialize database: could not attach creator to branch")
+        request.session.pop("setup_company_id", None)
+        return render(
+            request,
+            "initialize_database/horilla_department.html",
+            {"form": DepartmentForm(initial={"company_id": company})},
+        )
+    return render(
+        request,
+        "initialize_database/horilla_branch.html",
+        {"form": form, "company": company},
+    )
 
 
 @superuser_required
@@ -772,7 +821,17 @@ def initialize_database_job_position(request):
     if request.method == "POST":
         form = JobPositionMultiForm(request.POST)
         if form.is_valid():
-            form.save()
+            company = form.save()
+            if company.organization_structure == "branches":
+                branch = Branch._base_manager.filter(company_id=company).first()
+                if branch is None:
+                    branch = Branch._base_manager.create(
+                        company_id=company,
+                        name=f"{company.company} Main Branch",
+                    )
+                EmployeeWorkInformation._base_manager.filter(
+                    company_id=company, branch_id__isnull=True
+                ).update(branch_id=branch)
             form = JobPositionMultiForm(initial={"company_id": Company.objects.first()})
         return render(
             request,
@@ -2448,6 +2507,16 @@ def company_update(request, id, **kwargs):
         form = CompanyForm(request.POST, request.FILES, instance=company)
         if form.is_valid():
             form.save()
+            if company.organization_structure == "branches":
+                branch = Branch._base_manager.filter(company_id=company).first()
+                if branch is None:
+                    branch = Branch._base_manager.create(
+                        company_id=company,
+                        name=f"{company.company} Main Branch",
+                    )
+                EmployeeWorkInformation._base_manager.filter(
+                    company_id=company, branch_id__isnull=True
+                ).update(branch_id=branch)
             messages.success(request, _("Company updated"))
             return HorillaRedirect(request)
     return render(

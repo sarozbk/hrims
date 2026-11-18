@@ -219,13 +219,106 @@ class HorillaCompanyManager(models.Manager):
 
         return None
 
+    def get_branch_filter_path(self):
+        """Resolve a branch path for branch-owned or employee-owned records."""
+        try:
+            field = self.model._meta.get_field("branch_id")
+            if getattr(field, "is_relation", False) and field.related_model._meta.model_name == "branch":
+                return "branch_id"
+        except FieldDoesNotExist:
+            pass
+
+        # Employee itself owns work information through a reverse one-to-one.
+        if self.model._meta.model_name == "employee":
+            path = "employee_work_info__branch_id"
+            return path if self._field_exists(path) else None
+
+        # Most HR records point to their employee through employee_id. Apply
+        # the employee's branch to those rows without requiring every model
+        # to declare another manager configuration.
+        for field in self.model._meta.fields:
+            if (
+                isinstance(field, models.ForeignKey)
+                and field.related_model._meta.model_name == "employee"
+            ):
+                path = f"{field.name}__employee_work_info__branch_id"
+                return path if self._field_exists(path) else None
+        return None
+
+    def _apply_selected_branch(self, queryset):
+        request = getattr(_thread_locals, "request", None)
+        path = self.get_branch_filter_path()
+        if not request or not path:
+            return queryset
+
+        selected_company = get_selected_company()
+        if not selected_company:
+            return queryset
+
+        try:
+            from base.models import Branch, Company
+
+            company_is_branch_based = selected_company == "all"
+            if selected_company != "all":
+                company_is_branch_based = Company._base_manager.filter(
+                    pk=selected_company, organization_structure="branches"
+                ).exists()
+            if not company_is_branch_based:
+                return queryset
+
+            branch_id = request.session.get("selected_branch")
+            can_view_all_branches = request.user.is_superuser or request.user.has_perm(
+                "base.change_company"
+            )
+            employee = getattr(request.user, "employee_get", None)
+            work_info = getattr(employee, "employee_work_info", None)
+            own_branch_id = getattr(work_info, "branch_id_id", None)
+
+            if not can_view_all_branches:
+                if not own_branch_id:
+                    return queryset.none()
+                if branch_id not in (None, "all", str(own_branch_id)):
+                    return queryset.none()
+                branch_id = own_branch_id
+            elif branch_id in (None, "all"):
+                return queryset
+
+            if branch_id == "none":
+                return queryset.none()
+
+            branch = (
+                Branch._base_manager.filter(pk=branch_id, is_active=True)
+                .only("company_id")
+                .first()
+            )
+            if not branch:
+                return queryset.none()
+            if selected_company != "all" and str(branch.company_id_id) != str(selected_company):
+                return queryset.none()
+            if selected_company == "all" and not request.user.is_superuser:
+                allowed_company_ids = getattr(request, "all_my_company_ids", None)
+                if allowed_company_ids is None:
+                    allowed_company_ids = getattr(request, "allowed_company_ids", None)
+                if (
+                    allowed_company_ids is not None
+                    and branch.company_id_id not in allowed_company_ids
+                ):
+                    return queryset.none()
+
+            branch_filter = Q(**{path: branch_id})
+            if getattr(self.model, "include_shared_branch_rows", False):
+                branch_filter |= Q(**{f"{path}__isnull": True})
+            return queryset.filter(branch_filter)
+        except (TypeError, ValueError, FieldDoesNotExist):
+            return queryset.none()
+
     def get_queryset(self):
         qs = super().get_queryset()
         company = get_selected_company()
         filter_path = self.get_company_filter_path()
 
         if not filter_path or not company:
-            return qs
+            return self._apply_selected_branch(qs)
 
         # Superuser / legacy "all": no company filter (true tenant-wide).
         # Non-superuser "all" (All my companies): restrict to assignment
@@ -238,11 +331,11 @@ class HorillaCompanyManager(models.Manager):
                 if filter_ids is None:
                     filter_ids = getattr(request, "allowed_company_ids", None)
             if filter_ids is None:
-                return qs
+                return self._apply_selected_branch(qs)
             if not filter_ids:
-                return qs.none()
+                return self._apply_selected_branch(qs.none())
             try:
-                return self._guarded_queryset().filter(
+                qs = self._guarded_queryset().filter(
                     Q(**{f"{filter_path}__in": list(filter_ids)})
                     | Q(**{f"{filter_path}__isnull": True})
                 )
@@ -251,10 +344,10 @@ class HorillaCompanyManager(models.Manager):
                     f"Company filter (all-my-companies) failed for model "
                     f"{self.model.__name__} with path '{filter_path}': {e}"
                 )
-                return qs.none()
+                return self._apply_selected_branch(qs.none())
 
         try:
-            return self._guarded_queryset().filter(
+            qs = self._guarded_queryset().filter(
                 Q(**{filter_path: company}) | Q(**{f"{filter_path}__isnull": True})
             )
         except Exception as e:
@@ -262,7 +355,8 @@ class HorillaCompanyManager(models.Manager):
                 f"Company filter failed for model {self.model.__name__} "
                 f"with path '{filter_path}': {e}"
             )
-            return qs.none()
+            return self._apply_selected_branch(qs.none())
+        return self._apply_selected_branch(qs)
 
     def _guarded_queryset(self):
         """Return an empty queryset of this manager's class with the DISTINCT guard."""

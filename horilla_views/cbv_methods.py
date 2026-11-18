@@ -530,6 +530,14 @@ def get_quick_date_filters(ranges, fields):
     today = timezone.localdate()
 
     def setter(name, value):
+        if value is not None:
+            from payroll.nepali_calendar import (
+                bikram_sambat_to_display,
+                nepali_calendar_enabled,
+            )
+
+            if nepali_calendar_enabled():
+                value = bikram_sambat_to_display(value)
         return (
             f"$('#applyFilter').closest('form').find('[name={name}]').val('{value}');"
         )

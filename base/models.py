@@ -94,7 +94,20 @@ class Company(HorillaModel):
     Company model
     """
 
+    ORGANIZATION_STRUCTURE_CHOICES = [
+        ("single", _("One company, one location")),
+        ("branches", _("One company with multiple branches")),
+        ("group", _("Group with multiple companies")),
+    ]
+
     company = models.CharField(max_length=50, verbose_name=_("Name"))
+    organization_structure = models.CharField(
+        max_length=20,
+        choices=ORGANIZATION_STRUCTURE_CHOICES,
+        default="single",
+        verbose_name=_("Organization structure"),
+        help_text=_("Choose how this organization is structured."),
+    )
     hq = models.BooleanField(default=False)
     # Nullable so a company can be created from just a name (master data import).
     address = models.TextField(max_length=255, null=True)
@@ -153,6 +166,104 @@ class Company(HorillaModel):
         """
 
         return self.pk
+
+
+class Branch(models.Model):
+    """A physical or operational branch belonging to one company."""
+
+    company_id = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="branches",
+        verbose_name=_("Company"),
+    )
+    name = models.CharField(max_length=100, verbose_name=_("Branch name"))
+    code = models.CharField(max_length=30, blank=True, verbose_name=_("Branch code"))
+    address = models.TextField(max_length=255, blank=True, verbose_name=_("Address"))
+    country = models.CharField(max_length=50, blank=True, verbose_name=_("Country"))
+    state = models.CharField(max_length=50, blank=True, verbose_name=_("State"))
+    city = models.CharField(max_length=50, blank=True, verbose_name=_("City"))
+    is_active = models.BooleanField(default=True, verbose_name=_("Active"))
+
+    objects = HorillaCompanyManager(related_company_field="company_id")
+
+    class Meta:
+        verbose_name = _("Branch")
+        verbose_name_plural = _("Branches")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company_id", "name"], name="base_branch_company_name_uniq"
+            ),
+            models.UniqueConstraint(
+                fields=["company_id", "code"],
+                condition=~models.Q(code=""),
+                name="base_branch_company_code_uniq",
+            ),
+        ]
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.company_id} — {self.name}"
+
+    def get_update_url(self):
+        return reverse_lazy("branch-update-form", kwargs={"pk": self.pk})
+
+    def get_delete_url(self):
+        return reverse_lazy("generic-delete")
+
+    def get_delete_instance(self):
+        return self.pk
+
+
+class DateTable(models.Model):
+    """One row per Gregorian date with its Bikram Sambat period boundaries."""
+
+    ad_date = models.DateField(primary_key=True, verbose_name=_("AD date"))
+    bs_date = models.CharField(max_length=10, unique=True, verbose_name=_("BS date"))
+    ys = models.DateField(verbose_name=_("BS year start"))
+    ye = models.DateField(verbose_name=_("BS year end"))
+    fys = models.DateField(verbose_name=_("Fiscal year start"))
+    fye = models.DateField(verbose_name=_("Fiscal year end"))
+    hs = models.DateField(verbose_name=_("Half-year start"))
+    he = models.DateField(verbose_name=_("Half-year end"))
+    qs = models.DateField(verbose_name=_("Quarter start"))
+    qe = models.DateField(verbose_name=_("Quarter end"))
+    ms = models.DateField(verbose_name=_("BS month start"))
+    me = models.DateField(verbose_name=_("BS month end"))
+
+    class Meta:
+        db_table = "dates_table"
+        ordering = ["ad_date"]
+        verbose_name = _("Date table row")
+        verbose_name_plural = _("Date table")
+
+
+class NepaliCalendarMonth(models.Model):
+    """Published Bikram Sambat month lengths, editable when the calendar changes."""
+
+    bs_year = models.PositiveSmallIntegerField(verbose_name=_("BS year"))
+    bs_month = models.PositiveSmallIntegerField(verbose_name=_("BS month"))
+    days_in_month = models.PositiveSmallIntegerField(verbose_name=_("Days in month"))
+
+    class Meta:
+        db_table = "nepali_calendar_months"
+        ordering = ["bs_year", "bs_month"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["bs_year", "bs_month"], name="base_nepali_month_uniq"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(days_in_month__gte=29, days_in_month__lte=32),
+                name="base_nepali_month_days_range",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(bs_month__gte=1, bs_month__lte=12),
+                name="base_nepali_month_number_range",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.bs_year}-{self.bs_month:02}: {self.days_in_month} days"
 
 
 class CompanyGroupAssignment(HorillaModel):

@@ -16,6 +16,7 @@ from django_filters import CharFilter, DateFilter, filters
 from base.models import (
     Announcement,
     AnnouncementView,
+    Branch,
     Company,
     CompanyLeaves,
     Department,
@@ -976,6 +977,21 @@ class CompanyFilter(FilterSet):
     class Meta:
         model = Company
         fields = ["company", "hq", "address", "country", "state", "city", "zip"]
+
+
+class BranchFilter(FilterSet):
+    search = CharFilter(method="search_method")
+
+    def search_method(self, queryset, name, value):
+        return (
+            queryset.filter(name__icontains=value)
+            | queryset.filter(code__icontains=value)
+            | queryset.filter(city__icontains=value)
+        ).distinct()
+
+    class Meta:
+        model = Branch
+        fields = ["company_id", "name", "code", "city", "country"]
 
 
 class MailServerFilter(HorillaFilterSet):

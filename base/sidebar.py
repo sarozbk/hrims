@@ -378,6 +378,16 @@ class BaseSettings:
             ],
         },
         {
+            "label": _("Branches"),
+            "url": reverse_lazy("branch-view"),
+            "accessibility": company_accessibility,
+            "search_entries": [
+                {"text": _("Branch name"), "description": _("Name of the branch")},
+                {"text": _("Branch code"), "description": _("Optional branch identifier")},
+                {"text": _("Branch location"), "description": _("City and address of the branch")},
+            ],
+        },
+        {
             "label": _("Departments"),
             "url": reverse_lazy("department-view"),
             "accessibility": department_accessibility,

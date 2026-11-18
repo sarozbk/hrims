@@ -8,6 +8,7 @@ from base import dashboard as dashboard_module
 from base import ess_dashboard, request_and_approve, views
 from base.cbv import (
     announcement_cbv,
+    branch,
     company,
     company_leaves,
     department,
@@ -321,6 +322,11 @@ urlpatterns = [
         name="initialize-database-company",
     ),
     path(
+        "initialize-database-branch/",
+        views.initialize_database_branch,
+        name="initialize-database-branch",
+    ),
+    path(
         "initialize-database-department/",
         views.initialize_database_department,
         name="initialize-database-department",
@@ -512,6 +518,19 @@ urlpatterns = [
     ),
     path("settings/company-create/", views.company_create, name="company-create"),
     path("settings/company-view/", views.company_view, name="company-view"),
+    path("settings/branch-view/", branch.branch_view, name="branch-view"),
+    path("branch-list/", branch.BranchListView.as_view(), name="branch-list"),
+    path("branch-navbar/", branch.BranchNavView.as_view(), name="branch-navbar"),
+    path(
+        "branch-create-form/",
+        branch.BranchCreateForm.as_view(),
+        name="branch-create-form",
+    ),
+    path(
+        "branch-update-form/<int:pk>/",
+        branch.BranchCreateForm.as_view(),
+        name="branch-update-form",
+    ),
     path("company-list/", company.CompanyListView.as_view(), name="company-list"),
     path("company-navbar/", company.CompanyNavView.as_view(), name="company-navbar"),
     path(

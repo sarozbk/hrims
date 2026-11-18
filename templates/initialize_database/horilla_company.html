@@ -10,12 +10,18 @@
             <div class="oh-onboarding-card__count">2</div>
             <span class="oh-onboarding-card__text">{% trans "Company" %}</span>
         </li>
+        {% if form.organization_structure.value == "branches" %}
         <li class="oh-onboarding-card__step">
             <div class="oh-onboarding-card__count">3</div>
+            <span class="oh-onboarding-card__text">{% trans "Branch" %}</span>
+        </li>
+        {% endif %}
+        <li class="oh-onboarding-card__step">
+            <div class="oh-onboarding-card__count">{% if form.organization_structure.value == "branches" %}4{% else %}3{% endif %}</div>
             <span class="oh-onboarding-card__text">{% trans "Department" %}</span>
         </li>
         <li class="oh-onboarding-card__step oh-onboarding-card__step">
-            <div class="oh-onboarding-card__count">4</div>
+            <div class="oh-onboarding-card__count">{% if form.organization_structure.value == "branches" %}5{% else %}4{% endif %}</div>
             <span class="oh-onboarding-card__text">{% trans "Job Position" %}</span>
         </li>
     </ul>
@@ -30,6 +36,11 @@
         <div class="oh-input-group mb-2">
             <label for="id_{{form.company.name}}" class="mb-1">{% trans "Company" %}</label>
             {{form.company}} {{form.company.errors}}
+        </div>
+        <div class="oh-input-group mb-2">
+            <label for="{{ form.organization_structure.id_for_label }}" class="mb-1">{% trans "Organization structure" %}</label>
+            {{ form.organization_structure }} {{ form.organization_structure.errors }}
+            <small class="text-muted">{% trans "Choose one structure. You can configure branches after setup." %}</small>
         </div>
         <div class="oh-input-group mb-2">
             <label for="id_{{form.address.name}}" class="mb-1">{% trans "Address" %}</label>

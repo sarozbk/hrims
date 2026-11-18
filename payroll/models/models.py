@@ -24,6 +24,7 @@ from django.utils.translation import ngettext
 from base.horilla_company_manager import HorillaCompanyManager
 from base.methods import get_nth_month_same_date
 from base.models import (
+    Branch,
     Company,
     Department,
     EmployeeShift,
@@ -181,6 +182,7 @@ class FilingStatus(HorillaModel):
     # builtins under a timeout. It is never rendered as HTML — the editor puts
     # it in a textarea, where Django escapes it.
     xss_exempt_fields = ["python_code"]
+    include_shared_branch_rows = True
 
     based_on_choice = [
         ("basic_pay", _("Basic Pay")),
@@ -250,6 +252,15 @@ class FilingStatus(HorillaModel):
     )
     company_id = models.ForeignKey(
         Company, null=True, editable=False, on_delete=models.PROTECT
+    )
+    branch_id = models.ForeignKey(
+        Branch,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="filing_statuses",
+        verbose_name=_("Branch"),
+        help_text=_("Leave blank to share these tax rules across all branches."),
     )
     objects = HorillaCompanyManager()
 

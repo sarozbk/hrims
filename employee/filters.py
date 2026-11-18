@@ -18,6 +18,7 @@ from django_filters import CharFilter
 from accessibility.methods import check_is_accessible
 from base.methods import filtersubordinatesemployeemodel
 from base.models import (
+    Branch,
     Company,
     Department,
     EmployeeShift,
@@ -312,6 +313,7 @@ class EmployeeFilter(HorillaFilterSet):
             "employee_work_info__job_role_id",
             "employee_work_info__reporting_manager_id",
             "employee_work_info__company_id",
+            "employee_work_info__branch_id",
             "employee_work_info__shift_id",
             "employee_work_info__tags",
             "employee_user_id__groups",
@@ -391,6 +393,13 @@ class EmployeeFilter(HorillaFilterSet):
             "display_fn": lambda obj: obj.company,
             "search_fields": ["company"],
             "placeholder": _("Select company..."),
+        },
+        "employee_work_info__branch_id": {
+            "key": "employee-branch",
+            "queryset_fn": lambda request: Branch.objects.all(),
+            "display_fn": lambda obj: obj.name,
+            "search_fields": ["name", "code"],
+            "placeholder": _("Select branch..."),
         },
         "employee_work_info__reporting_manager_id": {
             "key": "employee-reporting-manager",
@@ -725,6 +734,7 @@ class EmployeeReGroup:
         ("employee_work_info__job_role_id", "Job Role"),
         ("employee_work_info__reporting_manager_id", "Reporting Manager"),
         ("employee_work_info__company_id", "Company"),
+        ("employee_work_info__branch_id", "Branch"),
     ]
 
 

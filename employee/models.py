@@ -26,6 +26,7 @@ from PIL import Image
 from accessibility.accessibility import ACCESSBILITY_FEATURE
 from base.horilla_company_manager import HorillaCompanyManager
 from base.models import (
+    Branch,
     Company,
     Department,
     EmployeeShift,
@@ -986,6 +987,14 @@ class EmployeeWorkInformation(models.Model):
         null=True,
         verbose_name=_("Company"),
     )
+    branch_id = models.ForeignKey(
+        Branch,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="employee_work_information",
+        verbose_name=_("Branch"),
+    )
     email = models.EmailField(
         max_length=254, blank=True, null=True, verbose_name=_("Work Email")
     )
@@ -1021,6 +1030,29 @@ class EmployeeWorkInformation(models.Model):
 
     def __str__(self) -> str:
         return f"{self.employee_id} - {self.job_position_id}"
+
+    def clean(self):
+        super().clean()
+        if (
+            self.company_id_id
+            and self.company_id.organization_structure == "branches"
+            and not self.branch_id_id
+        ):
+            raise ValidationError(
+                {"branch_id": _("Select a branch for this employee.")}
+            )
+        if (
+            self.branch_id_id
+            and self.company_id_id
+            and self.branch_id.company_id_id != self.company_id_id
+        ):
+            raise ValidationError(
+                {
+                    "branch_id": _(
+                        "The selected branch must belong to the selected company."
+                    )
+                }
+            )
 
     def save(self, *args, **kwargs):
         self.full_clean()

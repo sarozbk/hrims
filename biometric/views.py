@@ -548,7 +548,9 @@ def biometric_device_unschedule(request, device_id):
     device.is_scheduler = False
     device.save()
     messages.success(request, _("Biometric device unscheduled successfully"))
-    return redirect(f"/biometric/view-biometric-devices/?{previous_data}")
+    return HorillaRedirect(
+        request, redirect_to=f"/biometric/view-biometric-devices/?{previous_data}"
+    )
 
 
 @login_required
@@ -2085,29 +2087,9 @@ def biometric_device_live(request):
     device = BiometricDevices.objects.get(id=device_id)
     is_live = is_live == "on"
     if is_live:
-        port_no = device.port
-        machine_ip = device.machine_ip
-        password = int(device.zk_password)
-        conn = None
-        # create ZK instance
         try:
             if device.machine_type == "zk":
-                zk_device = ZK(
-                    machine_ip,
-                    port=port_no,
-                    timeout=60,
-                    password=int(password),
-                    force_udp=False,
-                    ommit_ping=False,
-                )
-                conn = zk_device.connect()
-                instance = ZKBioAttendance(machine_ip, port_no, password)
-                conn.test_voice(index=14)
-                if conn:
-                    device.is_live = True
-                    device.is_scheduler = False
-                    device.save()
-                    instance.start()
+                _start_zk_live_capture(device)
             elif device.machine_type == "cosec":
                 cosec = COSECBiometric(
                     device.machine_ip,
@@ -2127,7 +2109,9 @@ def biometric_device_live(request):
                 else:
                     raise TimeoutError
             else:
-                pass
+                raise ValueError(
+                    f"Live capture is not supported for {device.machine_type!r} devices"
+                )
 
             script = """<script>
                     Swal.fire({
@@ -2142,10 +2126,12 @@ def biometric_device_live(request):
                     });
                     </script>
                 """
-        except TimeoutError as error:
+        except Exception:
             device.is_live = False
             device.save()
-            logger.error("An error comes in biometric_device_live", error)
+            logger.exception(
+                "Could not activate live capture for biometric device %s", device.id
+            )
             script = """
            <script>
                 Swal.fire({
@@ -2161,9 +2147,6 @@ def biometric_device_live(request):
                 });
             </script>
             """
-        finally:
-            if conn:
-                conn.disconnect()
     else:
         device.is_live = False
         device.save()
@@ -2188,6 +2171,32 @@ def biometric_device_live(request):
             </script>
             """
     return HttpResponse(script)
+
+
+def _start_zk_live_capture(device):
+    """Start ZKTeco live capture without requiring its speaker-test feature."""
+    port_no = device.port
+    machine_ip = device.machine_ip
+    password = int(device.zk_password)
+    zk_device = ZK(
+        machine_ip,
+        port=port_no,
+        timeout=60,
+        password=password,
+        force_udp=False,
+        ommit_ping=False,
+    )
+    conn = zk_device.connect()
+    if conn is None:
+        raise TimeoutError
+    try:
+        instance = ZKBioAttendance(machine_ip, port_no, password)
+        device.is_live = True
+        device.is_scheduler = False
+        device.save()
+        instance.start()
+    finally:
+        conn.disconnect()
 
 
 def zk_biometric_attendance_logs(device_or_devices):

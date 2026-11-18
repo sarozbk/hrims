@@ -267,12 +267,15 @@ class PayPeriodSettings(HorillaModel):
         return day if 1 <= day <= self.LAST_DAY else 1
 
     def start_in(self, year, month):
-        """The date the period of that month begins: the chosen day, or the month's last day."""
-        import calendar
-        from datetime import date
+        """The AD date a payroll period begins in a BS year and month."""
+        from payroll.nepali_calendar import (
+            bikram_sambat_to_gregorian,
+            nepali_month_days,
+        )
 
-        last = calendar.monthrange(year, month)[1]
-        return date(year, month, min(self.start_day, last))
+        days = nepali_month_days(year, month)
+        day = min(self.start_day, days)
+        return bikram_sambat_to_gregorian(f"{year:04d}-{month:02d}-{day:02d}")
 
     def _next_month(self, year, month):
         return (year, month + 1) if month < 12 else (year + 1, 1)
@@ -288,17 +291,25 @@ class PayPeriodSettings(HorillaModel):
         """
         from datetime import timedelta
 
-        this = self.start_in(on_date.year, on_date.month)
+        from payroll.nepali_calendar import bikram_sambat_to_display
+
+        bs_year, bs_month, _bs_day = map(
+            int, bikram_sambat_to_display(on_date).split("-")
+        )
+        this = self.start_in(bs_year, bs_month)
         if on_date >= this:
             start = this
         else:
             year, month = (
-                (on_date.year, on_date.month - 1)
-                if on_date.month > 1
-                else (on_date.year - 1, 12)
+                (bs_year, bs_month - 1)
+                if bs_month > 1
+                else (bs_year - 1, 12)
             )
             start = self.start_in(year, month)
-        following = self.start_in(*self._next_month(start.year, start.month))
+        start_year, start_month, _start_day = map(
+            int, bikram_sambat_to_display(start).split("-")
+        )
+        following = self.start_in(*self._next_month(start_year, start_month))
         return start, following - timedelta(days=1)
 
     def end_for(self, start):
@@ -311,9 +322,12 @@ class PayPeriodSettings(HorillaModel):
         """
         from datetime import timedelta
 
-        if start == self.start_in(start.year, start.month):
+        from payroll.nepali_calendar import bikram_sambat_to_display
+
+        year, month, _day = map(int, bikram_sambat_to_display(start).split("-"))
+        if start == self.start_in(year, month):
             return self.start_in(
-                *self._next_month(start.year, start.month)
+                *self._next_month(year, month)
             ) - timedelta(days=1)
         return self.period_end_for(start)
 
@@ -354,12 +368,16 @@ class PayPeriodSettings(HorillaModel):
         day and cross into the next month: from the 1st it is the calendar month,
         from the 15th of September it runs to the 14th of October.
         """
-        import calendar
         from datetime import timedelta
 
-        return start + timedelta(
-            days=calendar.monthrange(start.year, start.month)[1] - 1
+        from payroll.nepali_calendar import (
+            bikram_sambat_to_display,
+            nepali_month_days,
         )
+
+        year, month, _day = map(int, bikram_sambat_to_display(start).split("-"))
+        days = nepali_month_days(year, month)
+        return start + timedelta(days=days - 1)
 
     def pay_date_for(self, period_end):
         """
@@ -368,18 +386,26 @@ class PayPeriodSettings(HorillaModel):
         Either a number of days after it, or the first occurrence of a day of the month after
         it: the 5th, the 30th (the last day when the month is shorter), or the last day.
         """
-        import calendar
-        from datetime import date, timedelta
+        from datetime import timedelta
+
+        from payroll.nepali_calendar import (
+            bikram_sambat_to_display,
+            bikram_sambat_to_gregorian,
+            nepali_month_days,
+        )
 
         day = self.pay_day_of_month
         if not day:
             return period_end + timedelta(days=self.pay_day_offset)
-        year, month = period_end.year, period_end.month
+        year, month, _day = map(int, bikram_sambat_to_display(period_end).split("-"))
         for _step in range(2):
-            candidate = date(year, month, min(day, calendar.monthrange(year, month)[1]))
+            month_days = nepali_month_days(year, month)
+            candidate = bikram_sambat_to_gregorian(
+                f"{year:04d}-{month:02d}-{min(day, month_days):02d}"
+            )
             if candidate > period_end:
                 return candidate
-            year, month = (year, month + 1) if month < 12 else (year + 1, 1)
+            year, month = self._next_month(year, month)
         return candidate
 
     @classmethod

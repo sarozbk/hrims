@@ -7,6 +7,7 @@ UK PAYE, flat rate) as FilingStatus rows with their slabs and adjustments.
     python manage.py seed_tax_packs                 # load them all
     python manage.py seed_tax_packs --list          # show what is available
     python manage.py seed_tax_packs --pack in_new   # load specific ones
+    python manage.py seed_tax_packs --branch 1     # load for one branch
 
 Idempotent: packs are keyed on name, so re-running never duplicates and never
 overwrites an admin's edits to one they have already tuned.
@@ -18,6 +19,7 @@ clicking through the UI.
 
 from django.core.management.base import BaseCommand, CommandError
 
+from base.models import Branch
 from payroll.tax_packs import TAX_PACKS, load_tax_packs
 
 
@@ -36,6 +38,11 @@ class Command(BaseCommand):
             action="store_true",
             help="List the available packs and exit.",
         )
+        parser.add_argument(
+            "--branch",
+            type=int,
+            help="Attach loaded packs to this branch (omit to share across branches).",
+        )
 
     def handle(self, *args, **options):
         if options["list"]:
@@ -53,7 +60,13 @@ class Command(BaseCommand):
                     f"Available: {', '.join(sorted(known))}"
                 )
 
-        created = load_tax_packs(keys)
+        branch = None
+        if options["branch"] is not None:
+            branch = Branch._base_manager.filter(pk=options["branch"]).first()
+            if branch is None:
+                raise CommandError(f"Branch {options['branch']} does not exist.")
+
+        created = load_tax_packs(keys, branch=branch)
         if not created:
             self.stdout.write(
                 self.style.WARNING("Nothing loaded — those packs already exist.")

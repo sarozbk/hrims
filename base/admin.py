@@ -11,6 +11,7 @@ from base.models import (
     Announcement,
     Attachment,
     AttendanceAllowedIP,
+    Branch,
     Company,
     CompanyGroupAssignment,
     CompanyLeaves,
@@ -29,6 +30,8 @@ from base.models import (
     JobRole,
     MultipleApprovalCondition,
     MultipleApprovalManagers,
+    DateTable,
+    NepaliCalendarMonth,
     PenaltyAccounts,
     RotatingShift,
     RotatingShiftAssign,
@@ -46,6 +49,47 @@ from base.models import (
 
 admin.site.register(CompanyGroupAssignment)
 admin.site.register(Company)
+admin.site.register(Branch)
+
+
+@admin.register(DateTable)
+class DateTableAdmin(admin.ModelAdmin):
+    list_display = ("ad_date", "bs_date", "ms", "me", "fys", "fye")
+    search_fields = ("bs_date",)
+    ordering = ("ad_date",)
+    readonly_fields = tuple(field.name for field in DateTable._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(NepaliCalendarMonth)
+class NepaliCalendarMonthAdmin(admin.ModelAdmin):
+    list_display = ("bs_year", "bs_month", "days_in_month")
+    list_filter = ("bs_year",)
+    ordering = ("bs_year", "bs_month")
+    fields = ("bs_year", "bs_month", "days_in_month")
+    readonly_fields = ("bs_year", "bs_month")
+    actions = ("rebuild_date_table",)
+
+    @admin.action(description="Rebuild AD ↔ BS date table from calendar settings")
+    def rebuild_date_table(self, request, queryset):
+        from base.nepali_calendar_data import rebuild_nepali_date_table
+
+        count = rebuild_nepali_date_table()
+        self.message_user(request, f"Rebuilt {count:,} date rows from calendar settings.")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 admin.site.register(Department, SimpleHistoryAdmin)
 admin.site.register(JobPosition)
 admin.site.register(JobRole)

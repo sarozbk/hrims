@@ -12,6 +12,7 @@ from django.utils.functional import SimpleLazyObject
 from django.utils.translation import gettext_lazy as _
 
 from base.models import (
+    Branch,
     Company,
     CompanyLanguageSetting,
     DefaultExportPermission,
@@ -133,6 +134,68 @@ def get_companies(request):
     }
 
 
+def get_branches(request):
+    """Branches available in the currently selected company."""
+    if not request.user.is_authenticated:
+        return {"all_branches": [], "show_branch_switcher": False}
+
+    company_id = request.session.get("selected_company")
+    if company_id == "all":
+        return {"all_branches": [], "show_branch_switcher": False}
+    if not company_id:
+        company = getattr(
+            getattr(getattr(request.user, "employee_get", None), "employee_work_info", None),
+            "company_id",
+            None,
+        )
+        company_id = getattr(company, "pk", None)
+    company = Company._base_manager.filter(pk=company_id).first() if company_id else None
+    if not company or company.organization_structure != "branches":
+        return {"all_branches": [], "show_branch_switcher": False}
+
+    can_view_all_branches = request.user.is_superuser or request.user.has_perm(
+        "base.change_company"
+    )
+    branches = list(
+        Branch._base_manager.filter(company_id=company, is_active=True).values_list(
+            "id", "name", "code"
+        )
+    )
+    if not can_view_all_branches:
+        employee = getattr(request.user, "employee_get", None)
+        work_info = getattr(employee, "employee_work_info", None)
+        employee_branch_id = getattr(work_info, "branch_id_id", None)
+        branches = [branch for branch in branches if branch[0] == employee_branch_id]
+
+    default_branch = (
+        "all"
+        if can_view_all_branches
+        else (str(branches[0][0]) if branches else "none")
+    )
+    selected_branch = str(request.session.get("selected_branch", default_branch))
+    allowed_ids = {str(branch[0]) for branch in branches}
+    if can_view_all_branches:
+        allowed_ids.add("all")
+    else:
+        allowed_ids.add("none")
+    if selected_branch not in allowed_ids:
+        selected_branch = default_branch
+    request.session["selected_branch"] = selected_branch
+
+    choices = []
+    if can_view_all_branches:
+        choices.append(("all", _("All branches"), selected_branch == "all"))
+    choices.extend(
+        (str(pk), f"{name} ({code})" if code else name, str(pk) == selected_branch)
+        for pk, name, code in branches
+    )
+    return {
+        "all_branches": choices,
+        "show_branch_switcher": bool(branches),
+        "selected_branch": selected_branch,
+    }
+
+
 @login_required
 @hx_request_required
 def update_selected_company(request):
@@ -170,6 +233,7 @@ def update_selected_company(request):
         getattr(user, "employee_work_info", None), "company_id", None
     )
     request.session["selected_company"] = company_id
+    request.session["selected_branch"] = "all"
     request.session.pop("hlv_selected_ids", None)
     request.session.pop("prev_path", None)
     scoped_all = (
@@ -213,6 +277,74 @@ urlpatterns.append(
         "update-selected-company/",
         update_selected_company,
         name="update-selected-company",
+    )
+)
+
+
+@login_required
+@hx_request_required
+def update_selected_branch(request):
+    """Change the active branch filter within the selected company."""
+    from base.auth_backends import company_scoped_active, get_allowed_company_ids
+
+    branch_id = request.GET.get("branch_id", "all")
+    next_url = request.META.get("HTTP_REFERER") or "/"
+    company_id = request.session.get("selected_company")
+    if not company_id or company_id == "all":
+        messages.error(request, _("Select one company before choosing a branch."))
+        return HorillaRedirect(request, redirect_to=next_url)
+
+    allowed_company_ids = None
+    can_view_all_branches = request.user.is_superuser or request.user.has_perm(
+        "base.change_company"
+    )
+    if company_scoped_active() and not request.user.is_superuser:
+        allowed_company_ids = get_allowed_company_ids(request.user)
+    elif not request.user.has_perm("base.change_company"):
+        own_company = getattr(
+            getattr(getattr(request.user, "employee_get", None), "employee_work_info", None),
+            "company_id_id",
+            None,
+        )
+        allowed_company_ids = [own_company] if own_company else []
+
+    try:
+        parsed_company_id = int(company_id)
+    except (TypeError, ValueError):
+        parsed_company_id = None
+    if allowed_company_ids is not None and parsed_company_id not in allowed_company_ids:
+        messages.error(request, _("You do not have access to that company."))
+        return HorillaRedirect(request, redirect_to=next_url)
+
+    if branch_id == "all" and not can_view_all_branches:
+        messages.error(request, _("You can only view your assigned branch."))
+        return HorillaRedirect(request, redirect_to=next_url)
+
+    if branch_id != "all" and not Branch._base_manager.filter(
+        pk=branch_id, company_id=company_id, is_active=True
+    ).exists():
+        messages.error(request, _("Choose a branch from the selected company."))
+        return HorillaRedirect(request, redirect_to=next_url)
+
+    if not can_view_all_branches:
+        employee = getattr(request.user, "employee_get", None)
+        work_info = getattr(employee, "employee_work_info", None)
+        own_branch_id = getattr(work_info, "branch_id_id", None)
+        if str(own_branch_id) != str(branch_id):
+            messages.error(request, _("You can only view your assigned branch."))
+            return HorillaRedirect(request, redirect_to=next_url)
+
+    request.session["selected_branch"] = branch_id
+    request.session.pop("hlv_selected_ids", None)
+    request.session.pop("prev_path", None)
+    return HorillaRedirect(request, redirect_to=next_url)
+
+
+urlpatterns.append(
+    path(
+        "update-selected-branch/",
+        update_selected_branch,
+        name="update-selected-branch",
     )
 )
 

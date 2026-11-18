@@ -130,6 +130,7 @@ class EmployeesList(HorillaListView):
         ("employee_work_info__work_type_id", _("Work Type")),
         ("employee_work_info__reporting_manager_id", _("Reporting Manager")),
         ("employee_work_info__company_id", _("Company")),
+        ("employee_work_info__branch_id", _("Branch")),
     ]
     # The "Actions" dropdown already has an Export entry that exports the
     # selected employees (falling back to the full filtered list when nothing
@@ -214,6 +215,7 @@ class EmployeesList(HorillaListView):
         "employee_work_info__employee_type_id",
         "employee_work_info__location",
         "employee_work_info__company_id",
+        "employee_work_info__branch_id",
         "employee_work_info__email",
         "employee_work_info__mobile",
         "employee_work_info__date_joining",
@@ -255,6 +257,7 @@ class EmployeesList(HorillaListView):
         "employee_work_info__work_type_id": base_models.WorkType,
         "employee_work_info__employee_type_id": base_models.EmployeeType,
         "employee_work_info__company_id": base_models.Company,
+        "employee_work_info__branch_id": base_models.Branch,
     }
     import_related_column_export_mapping = {
         "employee_work_info__reporting_manager_id": "employee_work_info__reporting_manager_id__badge_id",

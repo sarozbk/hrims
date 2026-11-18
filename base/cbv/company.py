@@ -14,7 +14,8 @@ from django.utils.translation import gettext_lazy as _
 
 from base.filters import CompanyFilter
 from base.forms import CompanyForm
-from base.models import Company
+from base.models import Branch, Company
+from employee.models import EmployeeWorkInformation
 from horilla_views.cbv_methods import login_required, permission_required
 from horilla_views.forms import DynamicBulkUpdateForm
 from horilla_views.generic.cbv.views import (
@@ -197,7 +198,17 @@ class CompanyCreateForm(HorillaFormView):
 
     def form_valid(self, form: CompanyForm) -> HttpResponse:
         if form.is_valid():
-            form.save()
+            company = form.save()
+            if company.organization_structure == "branches":
+                branch = Branch._base_manager.filter(company_id=company).first()
+                if branch is None:
+                    branch = Branch.objects.create(
+                        company_id=company,
+                        name=f"{company.company} Main Branch",
+                    )
+                EmployeeWorkInformation._base_manager.filter(
+                    company_id=company, branch_id__isnull=True
+                ).update(branch_id=branch)
             if getattr(self.form.instance, "pk", None):
                 messages.success(
                     self.request, _("Company have been successfully updated.")

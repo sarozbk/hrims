@@ -45,6 +45,7 @@ from base.models import (
     Attachment,
     AttendanceAllowedIP,
     BaserequestFile,
+    Branch,
     Company,
     CompanyLeaves,
     Department,
@@ -759,6 +760,44 @@ class CompanyForm(ModelForm):
         if icon:
             self.validate_image(icon)
         return icon
+
+
+class BranchForm(ModelForm):
+    """Create or edit a company branch."""
+
+    class Meta:
+        model = Branch
+        fields = [
+            "company_id",
+            "name",
+            "code",
+            "address",
+            "country",
+            "state",
+            "city",
+            "is_active",
+        ]
+
+    def __init__(self, *args, company=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if company is not None:
+            self.fields["company_id"].initial = company
+            self.fields["company_id"].queryset = Company.objects.filter(pk=company.pk)
+            self.fields["company_id"].widget = forms.HiddenInput()
+
+    def clean(self):
+        cleaned = super().clean()
+        company = cleaned.get("company_id")
+        if (
+            company
+            and not self.instance.pk
+            and company.organization_structure != "branches"
+        ):
+            self.add_error(
+                "company_id",
+                _("Set the company organization structure to multiple branches first."),
+            )
+        return cleaned
 
 
 class DepartmentForm(ModelForm):
