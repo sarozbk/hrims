@@ -25,6 +25,8 @@ from .base import BASE_DIR, STATICFILES_DIRS, env
 # Gregorian.
 NEPALI_CALENDAR = True
 TIME_ZONE = "Asia/Kathmandu"
+DEBUG = True
+WHITE_LABELLING = True
 
 # Keep cookies secure by default. Set these to 0 only for an HTTP-only
 # deployment, where browsers otherwise refuse to send CSRF/session cookies.

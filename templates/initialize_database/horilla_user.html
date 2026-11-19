@@ -44,6 +44,9 @@
             </div>
             <main class="oh-auth">
                 <div class="oh-onboarding-card" style="max-height: 790px; max-width: 975px" id="ohAuthCard">
+                    {% if setup_step_template %}
+                        {% include setup_step_template %}
+                    {% else %}
                     <div class="oh-onboarding-card__header">
                         <span class="oh-onboarding-card__company-name">{% trans "Horilla HRMS" %}</span>
                         <ul class="oh-onboarding-card__steps">
@@ -116,6 +119,7 @@
                             </button>
                         </div>
                     </form>
+                    {% endif %}
                 </div>
                 <img
                     src="{% if white_label_company.icon %}{{ white_label_company.icon.url }}{% else %}{% static 'images/ui/auth-logo.png' %}{% endif %}"

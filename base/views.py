@@ -283,31 +283,32 @@ def initialize_database_condition():
 
 
 def _initial_setup_incomplete():
-    """Whether the first admin still needs company or branch setup."""
+    """Whether the first admin still needs to finish organization setup."""
     if initialize_database_condition():
         return True
     company = Company._base_manager.order_by("pk").first()
     if company is None:
         return True
     if company.organization_structure == "branches":
-        return not Branch._base_manager.filter(
-            company_id=company, is_active=True
-        ).exists()
-    return False
+        if not Branch._base_manager.filter(company_id=company, is_active=True).exists():
+            return True
+    if not Department._base_manager.filter(company_id=company).exists():
+        return True
+    return not JobPosition._base_manager.filter(company_id=company).exists()
 
 
-def _initialize_database_resume(request):
-    """Render the first unfinished company/branch step for a setup admin."""
+def _initialize_database_resume(request, full_page=False):
+    """Render the next unfinished organization setup step for the setup admin."""
     company = Company._base_manager.order_by("pk").first()
     if company is None:
-        return render(
-            request,
-            "initialize_database/horilla_company.html",
-            {
-                "form": CompanyForm(
-                    initial={"hq": True, "organization_structure": "branches"}
-                )
-            },
+        step_template = "initialize_database/horilla_company.html"
+        context = {
+            "form": CompanyForm(
+                initial={"hq": True, "organization_structure": "branches"}
+            )
+        }
+        return _render_initialize_database_step(
+            request, step_template, context, full_page
         )
 
     if company.organization_structure == "branches":
@@ -316,10 +317,11 @@ def _initialize_database_resume(request):
         ).order_by("pk").first()
         if branch is None:
             request.session["setup_company_id"] = company.pk
-            return render(
+            return _render_initialize_database_step(
                 request,
                 "initialize_database/horilla_branch.html",
                 {"form": BranchForm(company=company), "company": company},
+                full_page,
             )
 
     try:
@@ -334,11 +336,37 @@ def _initialize_database_resume(request):
         logger.exception("initialize database: could not resume creator company assignment")
 
     request.session.pop("setup_company_id", None)
-    return render(
-        request,
-        "initialize_database/horilla_department.html",
-        {"form": DepartmentForm(initial={"company_id": company})},
-    )
+    departments = Department._base_manager.filter(company_id=company).order_by("pk")
+    if not departments.exists():
+        return _render_initialize_database_step(
+            request,
+            "initialize_database/horilla_department.html",
+            {"form": DepartmentForm(initial={"company_id": company})},
+            full_page,
+        )
+
+    if not JobPosition._base_manager.filter(company_id=company).exists():
+        return _render_initialize_database_step(
+            request,
+            "initialize_database/horilla_job_position.html",
+            {
+                "form": JobPositionMultiForm(initial={"company_id": company}),
+                "job_positions": JobPosition._base_manager.filter(company_id=company),
+                "company": company,
+            },
+            full_page,
+        )
+    return redirect("/")
+
+
+def _render_initialize_database_step(request, step_template, context, full_page):
+    if full_page:
+        return render(
+            request,
+            "initialize_database/horilla_user.html",
+            {**context, "setup_step_template": step_template},
+        )
+    return render(request, step_template, context)
 
 
 def _shift_fixture_dates(file_path):
@@ -632,16 +660,6 @@ def initialize_database(request):
         if request.method == "POST":
             password = request.POST.get("password")
             if settings.DB_INIT_PASSWORD == password:
-                if request.user.is_authenticated and request.user.is_superuser:
-                    if getattr(request.user, "employee_get", None) is not None:
-                        request.session.pop("db_init_verified", None)
-                        return _initialize_database_resume(request)
-                if not initialize_database_condition():
-                    messages.warning(
-                        request,
-                        _("Log in as the setup administrator to continue initialization."),
-                    )
-                    return redirect("login")
                 request.session["db_init_verified"] = True
                 return redirect(initialize_database_user)
             else:
@@ -682,10 +700,25 @@ def initialize_database_user(request):
         user = HorillaUser.objects.filter(username=username).first()
         if user and not hasattr(user, "employee_get"):
             user.delete()
-        user = HorillaUser.objects.create_superuser(
-            username=username, email=email, password=password
-        )
-        employee = Employee()
+            user = None
+        if user is None:
+            user = HorillaUser.objects.create_superuser(
+                username=username, email=email, password=password
+            )
+            employee = Employee()
+        else:
+            # An abandoned setup may already have created this setup admin.
+            # Reuse it so restarting the wizard does not collide with the
+            # existing username or create another administrator.
+            user.set_password(password)
+            user.is_superuser = True
+            user.is_staff = True
+            user.is_active = True
+            user.email = email
+            user.save(update_fields=[
+                "password", "is_superuser", "is_staff", "is_active", "email"
+            ])
+            employee = user.employee_get
         employee.employee_user_id = user
         employee.badge_id = badge_id
         employee.employee_first_name = first_name
@@ -694,8 +727,13 @@ def initialize_database_user(request):
         employee.phone = phone
         employee.save()
         request.session.pop("db_init_verified", None)
-        user = authenticate(request, username=username, password=password)
-        login(request, user)
+        # The setup user has no company/work-info record yet.  Re-running the
+        # normal authentication chain here can therefore fail in a backend
+        # that expects an initialized employee context, which leaves the next
+        # HTMX wizard request anonymous and sends it back to login.  The user
+        # was just created with the supplied password, so establish the
+        # session directly with the project's model backend.
+        login(request, user, backend="base.auth_backends.CompanyScopedBackend")
         return render(
             request,
             "initialize_database/horilla_company.html",
@@ -797,13 +835,19 @@ def initialize_database_department(request):
     Returns:
         HttpResponse: The rendered HTML template for department creation.
     """
-    departments = Department.objects.all()
-    form = DepartmentForm(initial={"company_id": Company.objects.first()})
+    company = Company._base_manager.order_by("pk").first()
+    departments = (
+        Department._base_manager.filter(company_id=company)
+        if company
+        else Department._base_manager.none()
+    )
+    form = DepartmentForm(initial={"company_id": company})
     if request.method == "POST":
         form = DepartmentForm(request.POST)
         if form.is_valid():
             company = form.cleaned_data.get("company_id")
             form.save()
+            departments = Department._base_manager.filter(company_id=company)
             form = DepartmentForm(initial={"company_id": company})
     return render(
         request,
@@ -881,7 +925,7 @@ def initialize_database_job_position(request):
     Returns:
         HttpResponse: The rendered HTML template for job position creation.
     """
-    company = Company.objects.first()
+    company = Company._base_manager.order_by("pk").first()
     form = JobPositionMultiForm(initial={"company_id": company})
     if request.method == "POST":
         form = JobPositionMultiForm(request.POST)
@@ -897,20 +941,26 @@ def initialize_database_job_position(request):
                 EmployeeWorkInformation._base_manager.filter(
                     company_id=company, branch_id__isnull=True
                 ).update(branch_id=branch)
-            form = JobPositionMultiForm(initial={"company_id": Company.objects.first()})
+            form = JobPositionMultiForm(
+                initial={"company_id": Company._base_manager.order_by("pk").first()}
+            )
         return render(
             request,
             "initialize_database/horilla_job_position_form.html",
             {
                 "form": form,
-                "job_positions": JobPosition.objects.all(),
+                "job_positions": JobPosition._base_manager.filter(company_id=company),
                 "company": company,
             },
         )
     return render(
         request,
         "initialize_database/horilla_job_position.html",
-        {"form": form, "job_positions": JobPosition.objects.all(), "company": company},
+        {
+            "form": form,
+            "job_positions": JobPosition._base_manager.filter(company_id=company),
+            "company": company,
+        },
     )
 
 

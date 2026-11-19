@@ -298,13 +298,13 @@ def hx_request_required(view_func):
 
 
 def database_init_required(view_func):
-    """Allow the wizard's user creation step only before setup, and only after the DB_INIT_PASSWORD was verified."""
+    """Allow the user step while the multi-step setup is still incomplete."""
 
     @wraps(view_func)
     def wrapped_view(request, *args, **kwargs):
-        from base.views import initialize_database_condition
+        from base.views import _initial_setup_incomplete
 
-        if not initialize_database_condition():
+        if not _initial_setup_incomplete():
             messages.warning(request, _("The database is already initialized."))
             return redirect("login")
         if not request.session.get("db_init_verified"):

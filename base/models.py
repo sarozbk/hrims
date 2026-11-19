@@ -117,7 +117,7 @@ class Company(HorillaModel):
         choices=CALENDAR_SYSTEM_CHOICES,
         default="nepali",
         verbose_name=_("Calendar system"),
-        help_text=_("Choose which calendar to use for date selection and display."),
+        help_text=_("Choose whic calendar to use for date selection and display."),
     )
     hq = models.BooleanField(default=False)
     # Nullable so a company can be created from just a name (master data import).
